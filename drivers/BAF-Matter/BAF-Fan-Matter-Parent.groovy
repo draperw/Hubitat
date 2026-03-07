@@ -122,6 +122,7 @@ metadata {
         name: "BAF Fan Matter",
         namespace: "community",
         author: "draperw",
+        importUrl: "https://raw.githubusercontent.com/draperw/Hubitat/refs/heads/main/drivers/BAF-Matter/BAF-Fan-Matter-Parent.groovy",
         singleThreaded: true
     ) {
         capability "Actuator"

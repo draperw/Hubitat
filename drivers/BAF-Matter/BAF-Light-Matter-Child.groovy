@@ -102,6 +102,7 @@ metadata {
         name: "BAF Light Matter",
         namespace: "community",
         author: "draperw",
+        importUrl: "https://raw.githubusercontent.com/draperw/Hubitat/refs/heads/main/drivers/BAF-Matter/BAF-Light-Matter-Child.groovy",
         singleThreaded: true
     ) {
         capability "Actuator"
