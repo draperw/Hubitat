@@ -5,11 +5,18 @@
  *  Lutron LEAP Pico (User) adds held and doubleTapped. Either driver can be chosen on the device page: the bridge
  *  times events by the device's driver.
  *  A device of the Lutron LEAP Integration (User) app. Push presses the button on the bridge, so the Pico's Lutron
- *  action runs; the event comes back from the bridge (digital). Buttons are numbered from 1 (LEAP ButtonNumber + 1).
+ *  action runs; the event comes back from the bridge (digital). Buttons are numbered as in Lutron LEAP Pico (User):
+ *  on 1, raise 2, favourite 3, lower 4, off 5 (a 2-button or paddle Pico on 1, off 2), as Hubitat's Lutron integrations.
  *  Not single-threaded, and writes no state in commands.
  *  Used with the app, which needs Hubitat 2.5.0 or later. Tested on 2.5.3.
  *
  *  Changelog:
+ *  ## [1.0.1] - 2026-11-12
+ *    - Buttons numbered as Hubitat's Lutron integrations (Telnet and LEAP): on 1, raise 2, favourite 3, lower 4, off 5;
+ *      a 2-button or paddle Pico on 1, off 2.
+ *    - A button the Pico doesn't have (3-5 on a 2-button or paddle Pico) is refused: Push sends nothing, and the test
+ *      commands make no event.
+ *    - Debug logging ends at its deadline also when its timer was lost (checked when an event comes from the bridge).
  *  ## [1.0.0] - 2026-11-10
  *    - First release. A Pico with no timing: pushed at the press, released at the release; Push presses the button on the
  *      bridge.
@@ -31,7 +38,7 @@
  */
 import groovy.transform.Field
 
-@Field static final String VERSION = "1.0.0"
+@Field static final String VERSION = "1.0.1"
 @Field static final String DRIVER  = "Lutron LEAP Fast Pico (User)"
 
 metadata {
@@ -58,6 +65,7 @@ metadata {
 // numberOfButtons right after.
 void installed() {
     logWarn "installed..."
+    checkLogsOff()
     state.driverVersion = VERSION
 }
 
@@ -79,20 +87,31 @@ void release(Object n) {
     sendEventLog([name: "released", value: b, isStateChange: true, type: "digital", descriptionText: "${device.displayName} button ${b} was released".toString()])
 }
 
+// A Pico has only some of the numbers (a 2-button or paddle Pico is 1 and 2), so a button is checked against its own list
+// when the app has set it, and against 1..numberOfButtons otherwise
 Integer buttonOf(String name, Object n) {
     Integer b = intOrNull(n)
+    List<Integer> btns = picoButtons()
     Integer count = intOrNull(device.currentValue("numberOfButtons"))
-    if (b == null || b < 1 || (count != null && b > count)) {
-        logWarn "${name}: button ${n}? (1-${count ?: '?'})"
+    boolean ok = b != null && b >= 1 && (btns ? (b in btns) : (count == null || b <= count))
+    if (!ok) {
+        logWarn "${name}: button ${n}? (${btns ? 'buttons ' + btns.join(', ') : '1-' + (count ?: '?')})"
         return null
     }
     return b
+}
+
+// The Pico's buttons, from the data value the app sets ("1:0,5:2", button:Lutron number)
+List<Integer> picoButtons() {
+    String v = device?.getDataValue("lutronButtons")
+    return (v ?: "").tokenize(",").collect { intOrNull(it.tokenize(":")[0]) }.findAll { it != null }
 }
 
 /*******************************************************************
  ***** Events from the bridge
 ********************************************************************/
 void parse(List<Map> evts) {
+    checkLogsOff()
     evts?.each { Map e -> sendEventLog(e) }
 }
 
@@ -122,6 +141,7 @@ Integer intOrNull(Object v) {
 //Call this function from within updated() and configure() with no parameters: checkLogLevel()
 void checkLogLevel(Map levelInfo = [level:null, time:null]) {
     unschedule("logsOff")
+    state.remove("logsOffAt")
     //Set Defaults
     if (settings.logLevel == null) {
         device.updateSetting("logLevel",[value:"2", type:"enum"])
@@ -132,11 +152,15 @@ void checkLogLevel(Map levelInfo = [level:null, time:null]) {
         levelInfo.time = 30
     }
     //Schedule turn off and log as needed
-    if (levelInfo.level == null) levelInfo = getLogLevelInfo()
+    // what wasn't just defaulted comes from the settings: a level defaulted beside a stored time still gets its timer
+    Map stored = getLogLevelInfo()
+    if (levelInfo.level == null) levelInfo.level = stored.level
+    if (levelInfo.time == null) levelInfo.time = stored.time
     String logMsg = "Logging Level is: ${LOG_LEVELS[levelInfo.level]} (${levelInfo.level})"
     if (levelInfo.level >= 3 && levelInfo.time > 0) {
         logMsg += " for ${LOG_TIMES[levelInfo.time]}"
         runIn(60*levelInfo.time, "logsOff")
+        state.logsOffAt = now() + 60000L * levelInfo.time           // the deadline, kept apart from the job (checkLogsOff)
     }
     logInfo(logMsg)
 
@@ -151,12 +175,22 @@ Map getLogLevelInfo() {
 }
 
 void logsOff() {
+    state.remove("logsOffAt")
     logWarn "Debug and Trace logging disabled..."
     if (logLevelInfo.level >= 3) {
         Integer lastLvl = state.lastLogLevel != null ? state.lastLogLevel as Integer : 2
         device.updateSetting("logLevel",[value:lastLvl.toString(), type:"enum"])
         logWarn "Logging Level is: ${LOG_LEVELS[lastLvl]} (${lastLvl})"
     }
+}
+
+// Debug and Trace end at their deadline even with no job to end them: the hub stores a preference's default when it
+// creates a device, without running updated(), and a job can be lost. Called where this code runs anyway.
+void checkLogsOff() {
+    Map info = getLogLevelInfo()
+    if (info.level < 3 || info.time <= 0) return
+    if (state.logsOffAt == null) checkLogLevel()          // no deadline yet: its time starts now
+    else if (now() >= (state.logsOffAt as Long)) logsOff()
 }
 
 void logErr(String msg) {

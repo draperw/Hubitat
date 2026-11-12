@@ -12,6 +12,59 @@
  *  Requires Hubitat 2.5.0 or later (the definition's menu option; the mDNS listener needs 2.4.1). Tested on 2.5.3.
  *
  *  Changelog:
+ *  ## [1.0.1] - 2026-11-12
+ *    - Pico and keypad button numbers come from the bridge (Hubitat's Lutron Telnet numbering for Picos, Lutron's own
+ *      numbers for keypads): numberOfButtons, LED buttons and the button map follow them.
+ *    - Bound to one Lutron system: the bridge's serial is checked at each connect; another system is refused while the
+ *      app has devices (its zone 3 isn't this app's zone 3), and taken when it has none.
+ *    - A new pairing's credentials replace the old ones only once they work on the bridge's LEAP port, within 2 minutes;
+ *      Cancel works until then too, and either way the pairing before is kept.
+ *    - Flash passes the dimmer's time limit to the bridge.
+ *    - Caseta occupancy: a room with sensors is offered as "<room> Motion (Occupancy, untested)"; a list from the bridge
+ *      that couldn't read the rooms keeps the ones from before.
+ *    - Cancel during key generation wins: a key finished after it is discarded and the pairing port isn't opened.
+ *    - Each pairing keeps its own address: a new pairing's certificate is tried where it paired, and the kept pairing
+ *      connects at its own address (moved by Done with a new address, or by following the bridge), not one typed in
+ *      for a pairing that then failed or was cancelled (an install from before keeps the address it was last verified at).
+ *    - Following the bridge compares what mDNS finds with the address the link uses, not the field; a browse that finds
+ *      no Lutron system asks the _leap._tcp listener too.
+ *    - An occupancy device follows its sensors to a new area only when all of them are there.
+ *    - Pairing uses the address as it was when Pair was clicked.
+ *    - Following the bridge also asks the mDNS listener when the browse doesn't show the paired bridge at a new address,
+ *      and an address both report keeps the serial from either.
+ *    - Connect now uses the address shown in the field, as Done does. Cancel wins over a key handed to the bridge
+ *      meanwhile, and its clean-up (its bridge session included) leaves a newer attempt alone; a pairing that fails takes
+ *      its stored certificate with it.
+ *    - "Name new devices" names new devices only: each device keeps the style it was made with when it follows Lutron.
+ *    - The bridge leaves a new certificate's trial only once the app has kept it. The pairing before is never written
+ *      over: credentials have two slots, a new one goes into the free slot, and the app switches to it once it worked,
+ *      slot, store, fingerprints and address in one record written at once. One caller settles a trial (its promotion,
+ *      failure, expiry or Cancel), which settles it on every way out.
+ *    - A device list with keypads or occupancy only counts as a read with devices (missing devices are marked).
+ *    - A look for the bridge keeps a follow asked for during its browse. A zone whose controlling device changes under
+ *      the same number Warns (its rules act on that number).
+ *    - A new address saved (Done) during a pairing is moved to by the first Done after the pairing ends, instead of
+ *      being taken as already applied.
+ *    - Cancel wins over a certificate the bridge is handing over at that moment, and over a pairing status reported then.
+ *      Pair is offered again 15 s after Cancel, once the cancelled attempt's work has ended. A certificate for an
+ *      attempt that has ended is ignored, however late it comes; so are the bridge's progress and failure reports for one.
+ *    - Pair is refused while a pairing is under way (from a page opened before it began, or two at the same moment).
+ *      A key job that never finished (the hub restarted during it) no longer keeps Pair away.
+ *    - Clear pairing is refused while a pairing is under way, and ends any key job left over. A key job's failure only
+ *      fails its own attempt.
+ *    - A pairing interrupted by a hub restart ends then; one whose bridge session was lost otherwise (a bridge code save)
+ *      ends after its phase's time limit. The working pairing is kept.
+ *    - Following the bridge, an address the live browse finds outranks one the listener has cached. The page shows when
+ *      a new certificate is being checked.
+ *    - A hub restart while a new certificate is being checked leaves the check to finish. Cancel does nothing when no
+ *      pairing is under way.
+ *    - Connect now always says so in the log (on a link that is up it reconnects it); so do Pair and Cancel. A pairing
+ *      that worked leaves no bookkeeping behind in the app's state.
+ *    - Picos get their list of buttons (lutronButtons), as keypads do: a Pico refuses a button it doesn't have itself.
+ *    - A discovered service with a malformed serial no longer stops discovery, and a look that stopped part way no
+ *      longer blocks the next one.
+ *    - Debug logging ends at its deadline also when its timer was lost (checked at a hub start and when the app is
+ *      opened).
  *  ## [1.0.0] - 2026-11-10
  *    - First release. One app per Lutron Caseta Smart Bridge or RadioRA 3 processor (HomeWorks QSX and Athena are offered,
  *      marked untested): finds it by mDNS and follows it to a new address, pairs by the bridge button (key and certificate
@@ -46,7 +99,7 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.ConcurrentHashMap
 
-@Field static final String VERSION = "1.0.0"
+@Field static final String VERSION = "1.0.1"
 @Field static final String APP_NAME = "Lutron LEAP Integration (User)"
 @Field static final String BRIDGE_DRIVER = "Lutron LEAP Bridge (User)"
 @Field static final String NAMESPACE = "draperw"
@@ -66,6 +119,7 @@ import java.util.concurrent.ConcurrentHashMap
 @Field static final Integer FIND_FIRST_SECS = 1        // the first browse, in its own execution (never in a page render)
 @Field static final Integer FIND_EVERY_SECS = 3        // then every 3 s
 @Field static final Long FIND_AGAIN_MS = 5 * 60 * 1000L  // opening the page looks again once the last look is this old
+@Field static final Long FIND_STALE_MS = 60_000L        // a look whose last tick is this old has stopped (a tick threw)
 
 @Field static final String CSR_COMMON_NAME = "hubitat_leap_user"  // also the DisplayName the bridge keeps for the pairing
 @Field static final Integer RSA_BITS = 2048
@@ -73,10 +127,33 @@ import java.util.concurrent.ConcurrentHashMap
 // Credentials: password settings when the probe survives there, otherwise atomicState.
 // The setting names and the state names are the same. The key waiting for the button is kept the same way.
 @Field static final List<String> CRED_NAMES = ["leapKeyPem", "leapCertPem", "leapCaPem"]
+// Two slots for the credentials, under their own names: the pairing in use is one (credRecord().set, "leap" when
+// unset), a new pairing's candidate goes into the other, and when it works on the bridge's LEAP port the app makes that
+// slot the one in use. The pairing before is never written over, so a failure while keeping a new one leaves it as it was.
+@Field static final Map<String, List<String>> CRED_SLOTS = [leap: ["leapKeyPem", "leapCertPem", "leapCaPem"],
+                                                             cand: ["candKeyPem", "candCertPem", "candCaPem"]]
+// Who settles a new certificate's trial: promotion (credentialsWorked), its failure (candidateFailed), its expiry
+// (trialExpired) or Cancel. The app isn't single-threaded, so two can run at once; each must first claim the trial
+// (putIfAbsent: one wins), and the others leave it alone. Keyed "<app id>:<trial id>".
+@Field static ConcurrentHashMap<String, Boolean> trialClaims = new ConcurrentHashMap<>()
+// A Pair being started, keyed by app id: atomicState can't check and write in one step, so two Pair requests at the same
+// moment would both pass the busy check. Held only for startPairing's check and writes.
+@Field static ConcurrentHashMap<String, Boolean> pairStarts = new ConcurrentHashMap<>()
+
 @Field static final String PENDING_KEY = "pendingKeyPem"
 @Field static final String PROBE_SETTING = "credentialProbe"
 @Field static final Integer PROBE_CHARS = 1800                 // a 2048-bit PKCS#8 key PEM is ~1704 characters
-@Field static final List<String> BUSY_PHASES = ["making key", "press the bridge button", "requesting certificate"]
+@Field static final Integer TRIAL_SECS = 120          // time the new certificate gets to connect on the LEAP port
+// After Cancel, Pair waits this long: the cancelled attempt's work still running (a key being made, 2-9 s; its hand-off
+// to the bridge; a certificate being kept) then always ends before a new attempt starts, so it never meets one
+@Field static final Long CANCEL_COOLDOWN_MS = 15_000L
+@Field static final List<String> BUSY_PHASES = ["making key", "press the bridge button", "requesting certificate", "checking the new certificate"]
+// How long each phase can last before the app counts the pairing as stopped. Their own ends live in memory that a hub
+// restart or a bridge code save clears (the key job; the bridge's session, whose timeout then finds nothing to end):
+// the key job takes 2-9 s; the bridge allows 180 s for the button (restarted once on a certificate retry) and 10 s for
+// the certificate. "checking the new certificate" isn't here: the app's own trialExpired job ends it.
+@Field static final Map<String, Long> PHASE_LIMIT_MS = ["making key": 60_000L, "press the bridge button": 300_000L,
+                                                        "requesting certificate": 120_000L]
 
 // DER object identifiers
 @Field static final String OID_COMMON_NAME = "2.5.4.3"
@@ -108,6 +185,7 @@ preferences {
 // Everything else is the app's alone: state.
 Map mainPage() {
     checkAppVersion()
+    checkLogsOff()
     if (settings.devicesToAdd) addSelected()          // Next on Add Devices adds what was ticked, as in the built-in
     recoverBridge()
     dynamicPage(name: "mainPage", title: "Lutron LEAP (User) ${VERSION}", install: true, uninstall: true) {
@@ -140,8 +218,9 @@ Map configPage() {
     pageFind()
     syncPick()
     boolean looking = findActive()
+    boolean cooling = coolingDown()
     Map opts = [name: "configPage", title: "Lutron System Configuration", nextPage: credentialsPresent() ? "devicesPage" : "mainPage"]
-    if (busy || looking) opts.refreshInterval = 3
+    if (busy || looking || cooling) opts.refreshInterval = 3
     dynamicPage(opts) {
         section("Lutron System") {
             Map sys = systemOptions()
@@ -163,7 +242,8 @@ Map configPage() {
                 input name: "btnCancel", type: "button", title: "Cancel pairing"
                 input name: "btnRefresh", type: "button", title: "Refresh"
             } else {
-                input name: "btnPair", type: "button", title: credentialsPresent() ? "Re-pair with Lutron" : "Pair with the bridge"
+                if (cooling) paragraph "Cancelled. <b>Pair</b> is offered again in a few seconds."
+                else input name: "btnPair", type: "button", title: credentialsPresent() ? "Re-pair with Lutron" : "Pair with the bridge"
                 if (credentialsPresent()) {
                     input name: "btnConnect", type: "button", title: "Connect now"
                     input name: "btnClear", type: "button", title: "Clear pairing"
@@ -215,9 +295,9 @@ Map devicesPage() {
 
 boolean isInstalled() { app.getInstallationState() == "COMPLETE" }
 
-boolean pairingBusy() { ((Map) atomicState.pairing)?.phase in BUSY_PHASES }
-
 String statusText() {
+    if (atomicState.otherSystem && lutronChildren())
+        return "Paired with a different Lutron system from the one this app's devices belong to: not connected. Add that system in a new app instance, or remove this app's devices and connect again."
     if (!credentialsPresent()) return pairingBusy() ? "Pairing" : "Not paired"
     Object b = bridgeDevice()
     if (b == null) return "Paired; no bridge device"
@@ -250,12 +330,15 @@ String bridgeText() {
 // "Paired. (Re-pair only ...)" then a Status line with the pairing's date and time, as in the built-in
 String pairingText() {
     Map p = (Map) atomicState.pairing
-    Object pairedAt = atomicState.pairedAt
+    Object pairedAt = credRecord().at
     String head = credentialsPresent() ? "<b>Paired</b>. (Re-pair only if the Lutron system was reset.)" : "Not paired."
     String st = null
-    if (p?.phase == "making key") st = "Making the key (a few seconds)..."
+    if (pairingStopped(p)) st = p.phase == "making key" ? "Last pairing failed: the key wasn't made (the hub may have restarted)" :
+                                "Last pairing failed: the pairing stopped (the hub may have restarted)"
+    else if (p?.phase == "making key") st = "Making the key (a few seconds)..."
     else if (p?.phase == "press the bridge button") st = "<b>Press the small black button on the back of the bridge now</b> (within 3 minutes)."
     else if (p?.phase == "requesting certificate") st = "Button pressed; asking the bridge for a certificate..."
+    else if (p?.phase == "checking the new certificate") st = "Checking the new certificate with the bridge..."
     else if (p?.phase == "failed") st = "Last pairing failed: ${esc(p.detail)}"
     else if (credentialsPresent()) st = "&#10003; Pairing complete" + (pairedAt ? " on ${fmtTime(pairedAt as Long)}" : "")
     return st ? "${head}<br>Status: ${st}" : head
@@ -275,7 +358,7 @@ String scenesText() {
 
 String storageText() {
     String probe = (state.probe instanceof Map) ? "${state.probe.result} (${fmtTime(state.probe.at as Long)})" : "not tested yet"
-    String store = atomicState.credStore
+    String store = credRecord().store
     String where = store ? "Credentials are kept in <b>${store == 'settings' ? 'app password settings' : 'app state'}</b>; ${credentialCheck()}." : "No credentials stored."
     return "Password setting test with a dummy the size of a key: ${esc(probe)}.<br>${where}"
 }
@@ -284,7 +367,20 @@ void appButtonHandler(String btn) {
     switch (btn) {
         case "btnPair":    startPairing(); break
         case "btnCancel":  cancelPairing(); break
-        case "btnConnect": bridgeDevice()?.connectSoon(); break
+        case "btnConnect":
+            // the address shown in the field, as Done would take it (not during a pairing: that carries its own)
+            String shown = settings.bridgeIp?.trim()
+            if (shown && credentialsPresent() && !pairingBusy() && shown != linkIp()) {
+                updateCred(ip: shown)
+                state.lastBridgeIp = shown
+                logInfo "Connect now: connecting at ${shown}, the address in the field"
+            } else {
+                // a link that is up is dropped and made again: said here, as every other reconnect has its reason logged
+                boolean up = bridgeDevice()?.currentValue("connection")?.toString() == "connected"
+                logInfo "Connect now: ${up ? 'reconnecting' : 'connecting'} at ${linkIp() ?: '(no address)'}"
+            }
+            bridgeDevice()?.connectSoon()
+            break
         case "btnClear":   clearPairing(); break
         case "btnDiscover": bridgeDevice()?.discover(); break
         case "btnAdd":     addSelected(); break
@@ -324,14 +420,19 @@ void initialize() {
     // A setting cut short or wiped by Done shows up here rather than at the next connect
     if (credentialsPresent()) {
         String check = credentialCheck()
-        if (check == "intact") logDebug "Credentials intact (${atomicState.credStore})"
+        if (check == "intact") logDebug "Credentials intact (${credRecord().store})"
         else logWarn "Credentials ${check}: pair again"
     }
     // Connect when not connected, or reconnect when the IP changed; otherwise leave a live link alone
     String ip = settings.bridgeIp?.trim()
     Object b = bridgeDevice()
+    // Done with a new address moves the kept pairing there (not during a pairing: that one carries its own address)
+    boolean busy = pairingBusy()
+    if (ip && ip != state.lastBridgeIp && !busy) updateCred(ip: ip)
     if (credentialsPresent() && b != null && (ip != state.lastBridgeIp || b.currentValue("connection") != "connected")) b.connectSoon()
-    state.lastBridgeIp = ip
+    // During a pairing the new address isn't marked as applied, so the first Done after it moves the pairing there
+    if (busy && ip != state.lastBridgeIp) logInfo "A pairing is under way: the address ${ip} is used from the next Done after it ends"
+    else state.lastBridgeIp = ip
 }
 
 // Code updates: the user presses nothing after pasting a new version. Runs from the page and initialize().
@@ -342,6 +443,19 @@ void checkAppVersion() {
     if (old == null && state.probe == null) return                 // brand new; installed() sets up
     logWarn "App updated (${old} -> ${VERSION})"
     // Migrations from one version to the next go here (none since 1.0.0)
+}
+
+// Hub start: the listener again, and one look for the paired bridge (it may have moved while the hub was down)
+void hubStarted(Object evt) {
+    logDebug "Hub started"
+    checkLogsOff()
+    // A phase whose end was in memory (the key job, the bridge's pairing session) has ended; the working pairing, if any,
+    // is kept. A certificate on trial carries on: its end (trialExpired) and the bridge's trial persist.
+    Map p = (Map) atomicState.pairing
+    if (pairingBusy() && PHASE_LIMIT_MS.containsKey(p?.phase?.toString()))
+        pairingFailed("the hub restarted during the pairing", atomicState.pairAttempt?.toString())
+    listenMdns()
+    if (credentialsPresent() && pairedSerial() != null) startFind(true)
 }
 
 Object bridgeDevice() { getChildDevice(app.id.toString()) }
@@ -442,22 +556,82 @@ void removeSecret(String name) {
     try { app.removeSetting(name) } catch (Exception ignored) { }
 }
 
-boolean credentialsPresent() { atomicState.credStore != null }
+// The pairing in use, as one record written in one go: [set: slot, store: settings | state, hash: fingerprints, at:,
+// ip: its address]. An install from before keeps these as separate keys (credSet, credStore, credHash, pairedAt,
+// credIp): read from those until the first write, which replaces them with the record.
+Map credRecord() {
+    Map c = (Map) atomicState.cred
+    if (c != null) return c
+    if (atomicState.credStore == null && atomicState.credIp == null) return [:]
+    return [set: atomicState.credSet ?: "leap", store: atomicState.credStore, hash: atomicState.credHash, at: atomicState.pairedAt, ip: atomicState.credIp]
+}
 
-void storeCredentials(String keyPem, String certPem, String caPem) {
-    removeCredentials()
-    Map vals = [leapKeyPem: keyPem, leapCertPem: certPem, leapCaPem: caPem]
-    atomicState.credStore = putSecrets(vals, secretStore())
-    atomicState.credHash = vals.collectEntries { String k, String v -> [(k): sha256(v)] }
-    atomicState.pairedAt = now()
+void putCred(Map c) {
+    atomicState.cred = c
+    ["credSet", "credStore", "credHash", "pairedAt", "credIp"].each { atomicState.remove(it) }
+}
+
+void updateCred(Map changes) { putCred(new LinkedHashMap(credRecord()) + changes) }
+
+boolean credentialsPresent() { credRecord().store != null }
+
+// The candidate's slot becomes the pairing in use: it was read back whole (c), its fingerprints are kept, and the pairing
+// and its store switch in one write. Only then are the old slot's secrets removed; a failure before the switch leaves
+// the pairing before untouched.
+void useCandidate(Map c, String slot) {
+    if (c == null || !c.values().every { it }) throw new IllegalStateException("the new credentials didn't read back")
+    String oldSlot = credentialsPresent() ? activeSlot() : null
+    Map hashes = c.collectEntries { String k, String v -> [(k): sha256(v)] }
+    String ip = atomicState.candIp?.toString() ?: credRecord().ip
+    if (!atomicState.candStore || readSlot(slot, atomicState.candStore?.toString()) == null) throw new IllegalStateException("the new credentials are gone")
+    // slot, store, fingerprints, time and address committed together: one write
+    putCred([set: slot, store: atomicState.candStore, hash: hashes, at: now(), ip: ip])
+    atomicState.remove("candStore")
+    atomicState.remove("candIp")
+    // the slot before is now the free one: cleared (best effort; a leftover is overwritten by the next pairing)
+    if (oldSlot && oldSlot != slot) CRED_SLOTS[oldSlot].each { String k -> try { removeSecret(k) } catch (Exception ignored) { } }
 }
 
 void removeCredentials() {
-    CRED_NAMES.each { removeSecret(it) }
-    atomicState.remove("credStore")
-    atomicState.remove("credHash")
-    atomicState.remove("pairedAt")
+    CRED_SLOTS[activeSlot()].each { removeSecret(it) }
+    Object ip = credRecord().ip
+    putCred(ip ? [ip: ip] : [:])                         // one write; the address stays (a new pairing at the same bridge uses it)
 }
+
+// The candidate: the same three secrets under other names, in the same store; credentialsWorked() makes them the pairing
+String activeSlot() { credRecord().set == "cand" ? "cand" : "leap" }
+String candidateSlot() { activeSlot() == "leap" ? "cand" : "leap" }
+
+// A slot's three secrets by role (leapKeyPem, leapCertPem, leapCaPem), or null if any is missing
+Map readSlot(String slot, String store) {
+    if (!store) return null
+    List<String> names = CRED_SLOTS[slot]
+    Map c = [leapKeyPem: getSecret(names[0], store), leapCertPem: getSecret(names[1], store), leapCaPem: getSecret(names[2], store)]
+    return c.values().every { it } ? c : null
+}
+
+void storeCandidate(String keyPem, String certPem, String caPem) {
+    removeCandidate()
+    trialClaims.keySet().removeAll { it.startsWith("${app.id}:".toString()) }   // the trials before are long settled
+    atomicState.candId = UUID.randomUUID().toString()
+    List<String> n = CRED_SLOTS[candidateSlot()]
+    atomicState.candStore = putSecrets([(n[0]): keyPem, (n[1]): certPem, (n[2]): caPem], secretStore())
+}
+
+// True for the one caller that may settle this trial (see trialClaims)
+boolean claimTrial() {
+    String id = atomicState.candId?.toString()
+    return id != null && trialClaims.putIfAbsent("${app.id}:${id}".toString(), true) == null
+}
+
+void removeCandidate() {
+    CRED_SLOTS[candidateSlot()].each { removeSecret(it) }
+    atomicState.remove("candId")
+    atomicState.remove("candStore")
+    atomicState.remove("candIp")
+}
+
+Map readCandidate() { readSlot(candidateSlot(), atomicState.candStore?.toString()) }
 
 void removePending() {
     removeSecret(PENDING_KEY)
@@ -466,16 +640,17 @@ void removePending() {
 }
 
 Map readCredentials() {
-    String store = atomicState.credStore
+    String store = credRecord().store
     if (!store) return null
-    return CRED_NAMES.collectEntries { String k -> [(k): getSecret(k, store)] }
+    List<String> names = CRED_SLOTS[activeSlot()]
+    return [leapKeyPem: getSecret(names[0], store), leapCertPem: getSecret(names[1], store), leapCaPem: getSecret(names[2], store)]
 }
 
 // "intact", or what is wrong (without revealing anything). Reads only: it runs inside the bridge's calls too.
 String credentialCheck() {
     Map c = readCredentials()
     if (c == null) return "none stored"
-    Map hashes = (Map) atomicState.credHash ?: [:]
+    Map hashes = (Map) credRecord().hash ?: [:]
     List<String> bad = CRED_NAMES.findAll { String k -> c[k] == null || sha256(c[k]) != hashes[k] }
     if (!bad) return "intact"
     return "changed or missing: " + bad.collect { [leapKeyPem: "key", leapCertPem: "certificate", leapCaPem: "root CA"][it] }.join(", ")
@@ -487,12 +662,19 @@ String sha256(String s) {
 }
 
 /*******************************************************************
- ***** Called by the bridge device
+ ***** Called by the bridge device: credentials and the device list (pairing reports: Pairing)
 ********************************************************************/
 // The bridge device asks for these each time it connects. Reads only (no state writes): it runs while
 // the bridge is mid-call. null when not paired or a credential no longer matches its fingerprint.
+// Each set of credentials goes with its own address: a new pairing's with the address it paired at (candIp), the kept
+// pairing's with the address it last connected or was moved to (credIp: a Done with a new address, the bridge
+// followed). The address field alone can be mid-edit, or changed during a pairing that is then cancelled or fails.
 Map leapCredentials() {
-    String ip = settings.bridgeIp?.trim()
+    String field = settings.bridgeIp?.trim()
+    Map cand = readCandidate()
+    String candAt = atomicState.candIp ?: field
+    if (cand && candAt) return [ip: candAt, certificate: cand.leapCertPem, privateKey: cand.leapKeyPem, caCertificate: cand.leapCaPem, provisional: true]
+    String ip = credRecord().ip?.toString() ?: field
     if (!credentialsPresent() || !ip) return null
     String check = credentialCheck()
     if (check != "intact") {
@@ -503,24 +685,16 @@ Map leapCredentials() {
     return [ip: ip, certificate: c.leapCertPem, privateKey: c.leapKeyPem, caCertificate: c.leapCaPem]
 }
 
-void pairingProgress(String phase) {
-    if (!pairingBusy()) return
-    atomicState.pairing = [phase: phase, at: now()]
-    logInfo "Pairing: ${phase}"
-}
-
-void pairingFailed(String why) {
-    removePending()
-    atomicState.pairing = [phase: "failed", detail: why, at: now()]
-    logWarn "Pairing failed: ${why}"
-}
-
-// The signed certificate and the bridge's root. Kept only if the certificate holds our public key and
-// parses; returns whether it was kept (the bridge connects only then).
 // The bridge's device list, from the bridge's own execution: system, zones, picos, keypads, occupancy, scenes, readAt.
 // The keys of the list before it are kept, to tag what is new.
 void discoveryResult(Map list) {
     Map before = (Map) atomicState.discovery
+    // occupancyUnknown: the bridge couldn't read the occupancy groups this time (Caseta), so the rooms from the list
+    // before stay; a list with an empty occupancy clears them
+    if (list != null && list.occupancyUnknown == true) {
+        list.remove("occupancyUnknown")
+        list.occupancy = before?.occupancy
+    }
     List prev = before ? entriesOf(before).collect { it.key } : null
     if (prev != null) atomicState.prevKeys = prev
     atomicState.discovery = list
@@ -553,7 +727,10 @@ void followMovedSensors(Map list) {
             logWarn "${ch.displayName}: its area has no occupancy sensors any more"
             return
         }
-        Map to = (targets.size() == 1) ? (Map) targets[0] : null
+        // Only when every sensor it had is in that one area: a device that kept just part of its sensors would take its
+        // rules to another room
+        Map to = (targets.size() == 1 && mine.every { String sid -> ((List) targets[0].sensors ?: []).collect { it.toString() }.contains(sid) }) ?
+                 (Map) targets[0] : null
         String toDni = to ? "${prefix}${to.id}".toString() : null
         if (to && getChildDevice(toDni) == null) {
             try {
@@ -589,8 +766,13 @@ void refreshDevices(Map list) {
             if (dv == null) return
             String old = ch.getDataValue(dk)
             if (old != dv.toString()) {
+                // A zone controlled by another device under the same number: the Hubitat device (and its rules) stays
+                // bound to the number, which may now name another load (a project that reused it)
+                if (dk == "lutronDeviceHref" && old != null && ch.deviceNetworkId?.toString()?.contains("/z/")) {
+                    logWarn "${ch.displayName} (zone ${e.id}): now controlled by another device (${old} -> ${dv}); its rules act on what zone ${e.id} controls now: check them if that's another load"
+                }
                 ch.updateDataValue(dk, dv.toString())
-                if (old == null && dk in ["lutronDeviceType", "lutronModelNumber", "lutronLocation", "lutronDeviceHref"]) return   // first set: not news
+                if (old == null && dk in ["lutronDeviceType", "lutronModelNumber", "lutronLocation", "lutronDeviceHref", "lutronButtons"]) return   // first set: not news
                 changed << (dk == "ledButtons" ? "LED buttons ${old ?: 'none'} -> ${dv ?: 'none'}" : dk in ["lutronButtons", "sensors"] ? (dk == "sensors" ? "occupancy sensors" : "button map") : "${dk} ${old} -> ${dv}").toString()
             }
         }
@@ -609,7 +791,7 @@ void refreshDevices(Map list) {
 // The device's name, and its label if it follows Lutron, set to Lutron's name; returns what changed
 List<String> followName(Object ch, Map e) {
     List<String> changed = []
-    String lutron = labelFor(e)
+    String lutron = labelFor(e, nameStyleOf(ch, e))
     String oldName = ch.name?.toString()
     if (oldName != lutron) { ch.setName(lutron); changed << "name ${oldName} -> ${lutron}".toString() }
     if (labelFollows(ch)) {
@@ -633,38 +815,6 @@ void applyFollowedLabels() {
     }
 }
 
-// caPem: the CA the LEAP connection is checked against when it isn't the root the bridge sent (RA3: the Lutron root)
-Boolean pairingResult(String certPem, String rootPem, String caPem = null) {
-    String pendingStore = atomicState.pendingStore
-    String keyPem = pendingStore ? getSecret(PENDING_KEY, pendingStore) : null
-    String pubB64 = atomicState.pendingPubKey
-    if (!keyPem || !pubB64) {
-        logWarn "A certificate arrived with no pairing in progress; ignored"
-        return false
-    }
-    try {
-        X509Certificate cert = parseCert(certPem)
-        if (cert.getPublicKey().getEncoded().encodeBase64().toString() != pubB64) {
-            pairingFailed("the certificate is not for the key made here")
-            return false
-        }
-        String signedBy
-        try { cert.verify(parseCert(rootPem).getPublicKey()); signedBy = "signed by the bridge's root" }
-        catch (Exception e) { signedBy = "NOT signed by the root it came with (${e.message})" }
-        logInfo "Certificate '${cert.getSubjectX500Principal().getName()}' expires ${cert.getNotAfter().format('yyyy-MM-dd')}, ${signedBy}"
-    } catch (Exception e) {
-        pairingFailed("the certificate doesn't parse: ${e.message}")
-        return false
-    }
-    storeCredentials(keyPem, certPem, caPem ?: rootPem)
-    removePending()
-    // The bridge connects to this IP next: a later Done with the same IP leaves that link alone
-    atomicState.lastBridgeIp = settings.bridgeIp?.trim()
-    atomicState.pairing = [phase: "paired", at: now()]
-    logInfo "Paired; credentials kept in ${atomicState.credStore == 'settings' ? 'password settings' : 'state'}"
-    return true
-}
-
 /*******************************************************************
  ***** Finding the bridge on the network
 ********************************************************************/
@@ -681,8 +831,8 @@ void listenMdns() {
 }
 
 // The Lutron systems on the network: [ip:, serial:, systype:, untested:] for each _lutron._tcp service but the Connect
-// Bridge, from an active browse (~4 s: never call this from a page render). When the browse fails, the _leap._tcp
-// listener's entries with LEAP on 8081 (systype unknown: a Smart Bridge). Serials only in Debug logs.
+// Bridge, from an active browse (~4 s: never call this from a page render). When the browse fails or finds none, the
+// _leap._tcp listener's entries with LEAP on 8081 (systype unknown: a Smart Bridge). Serials only in Debug logs.
 List<Map> readSystems() {
     List<Map> out = []
     List found = null
@@ -704,17 +854,37 @@ List<Map> readSystems() {
             out << [ip: ip, serial: sn, systype: sys, untested: (sys != null && !(sys in TESTED_SYSTYPES))]
         }
         logDebug "mDNS ${BROWSE_TYPE}: ${found.size()} services, ${out.size()} kept: ${out}"
-    } else {
-        List entries = []
-        try { entries = (List) getMDNSEntries(MDNS_TYPE) ?: [] } catch (Exception e) { logDebug "getMDNSEntries threw ${e.message}" }
-        entries.each { Object en ->
-            if (!(en instanceof Map) || en.port?.toString() != LEAP_PORT.toString()) return
-            String ip = firstIp(en.ip4Addresses)
-            if (ip) out << [ip: ip, serial: serialOfHost(en.server), systype: null, untested: false]
-        }
-        logDebug "mDNS ${MDNS_TYPE} listener: ${entries.size()} entries, ${out.size()} on port ${LEAP_PORT}: ${out}"
     }
-    return out.unique { it.ip }.sort { it.ip }
+    // The listener too when the browse failed or found no Lutron system: it may have seen the bridge announce itself
+    if (found == null || out.isEmpty()) out.addAll(listenerSystems())
+    return mergeByIp(out)
+}
+
+// One record per address, each field from whichever source has it: the browse's system type, a serial only the
+// listener has (the paired bridge is known by its serial)
+List<Map> mergeByIp(List<Map> l) {
+    Map<String, Map> by = [:]
+    l.each { Map e ->
+        Map m = by[e.ip?.toString()]
+        if (m == null) { by[e.ip?.toString()] = new LinkedHashMap(e); return }
+        if (m.serial == null && e.serial != null) m.serial = e.serial
+        if (m.systype == null && e.systype != null) { m.systype = e.systype; m.untested = e.untested }
+    }
+    return by.values().sort { it.ip }
+}
+
+// The _leap._tcp listener's entries with LEAP on 8081, as readSystems' entries (systype unknown: a Smart Bridge)
+List<Map> listenerSystems() {
+    List<Map> out = []
+    List entries = []
+    try { entries = (List) getMDNSEntries(MDNS_TYPE) ?: [] } catch (Exception e) { logDebug "getMDNSEntries threw ${e.message}" }
+    entries.each { Object en ->
+        if (!(en instanceof Map) || en.port?.toString() != LEAP_PORT.toString()) return
+        String ip = firstIp(en.ip4Addresses)
+        if (ip) out << [ip: ip, serial: serialOfHost(en.server), systype: null, untested: false]
+    }
+    logDebug "mDNS ${MDNS_TYPE} listener: ${entries.size()} entries, ${out.size()} on port ${LEAP_PORT}: ${out}"
+    return out
 }
 
 // The hub's active mDNS browse (NetworkUtils; works from a user app). Blocks for about BROWSE_MS.
@@ -730,7 +900,7 @@ String firstIp(Object addrs) {
 
 Long serialOfHex(Object hex) {
     String h = hex?.toString()?.trim()
-    if (!h || !(h ==~ /(?i)[0-9a-f]{1,16}/)) return null
+    if (!h || !(h ==~ /(?i)[0-9a-f]{1,15}/)) return null    // 15 hex digits always fit a Long; Lutron's have 8
     return Long.parseLong(h, 16)
 }
 
@@ -746,22 +916,48 @@ Long pairedSerial() {
     try { return (sn != null) ? sn as Long : null } catch (Exception e) { return null }
 }
 
-// The bridge's own serial number (/device, IsThisDevice), from the bridge at each connect and in its device list
-void bridgeIdentity(Object serial) {
-    if (serial == null) return
+// The bridge's own serial number (/device, IsThisDevice), checked by the bridge at each connect before it sends or
+// applies anything. The devices are keyed by Lutron's ids (<app>/z/3), which mean other loads on another system, so the
+// app stays bound to one: "ok" (that system, or the first one), "new" (another system and no devices yet: the app takes
+// it), "wrong" (another system while this app has devices: they belong to the first one).
+// ip: the address of the session that read the serial (from the bridge's identity check; null from a device list).
+String bridgeIdentity(Object serial, Object ip = null) {
+    if (serial == null) return null
     Long sn
-    try { sn = serial as Long } catch (Exception e) { return }
-    if (sn != pairedSerial()) logDebug "Bridge serial number: ${sn}"
+    try { sn = serial as Long } catch (Exception e) { return null }
+    Long bound = pairedSerial()
+    if (bound == null || sn == bound) {
+        if (sn != bound) logDebug "Bridge serial number: ${sn}"
+        atomicState.bridgeSerial = sn
+        atomicState.remove("otherSystem")
+        if (ip) atomicState.verifiedIp = ip.toString()            // the address this system was last verified at
+        if (!atomicState.candStore) seedCredIp()                 // a trial's address is kept when it works
+        return "ok"
+    }
+    logDebug "Bridge serial number: ${sn}; this app's devices belong to ${bound}"
+    if (lutronChildren()) {
+        atomicState.otherSystem = now()
+        logWarn "The bridge at ${settings.bridgeIp?.trim()} is a different Lutron system from the one this app's devices belong to: not connected"
+        return "wrong"
+    }
     atomicState.bridgeSerial = sn
+    atomicState.remove("discovery")                              // the old system's device list
+    atomicState.remove("otherSystem")
+    logInfo "Paired with another Lutron system: its devices can be added once it has been read"
+    return "new"
 }
 
-boolean findActive() { ((Map) atomicState.find)?.active == true }
+// A look is running while its ticks keep coming: each tick stamps "at", so one that stopped can't block the next look
+boolean findActive() {
+    Map f = (Map) atomicState.find
+    return f?.active == true && f.at != null && now() - (f.at as Long) < FIND_STALE_MS
+}
 
 // Opening Lutron System Configuration starts a look (its browses run in their own executions, never in the page
 // render), unless one is running or the last one is recent.
 void pageFind() {
     Map f = (Map) atomicState.find
-    if (f?.active) return
+    if (findActive()) return
     if (f?.at != null && now() - (f.at as Long) < FIND_AGAIN_MS) return
     startFind(false)
 }
@@ -772,7 +968,7 @@ void pageFind() {
 void startFind(boolean follow, boolean quiet = false) {
     listenMdns()
     Map f = (Map) atomicState.find
-    if (f?.active) {
+    if (findActive()) {
         if (follow && !f.follow) atomicState.find = f + [follow: true]
         return
     }
@@ -785,21 +981,29 @@ void findTick() {
     if (!f?.active) return
     int reads = (f.reads as Integer) + 1
     List<Map> sys = readSystems()
-    if (sys) atomicState.systems = sys
+    // The browse blocks ~4 s: a follow asked for meanwhile (startFind(true)) is in atomicState, not in f
+    Map fNow = (Map) atomicState.find
+    boolean follow = f.follow == true || fNow?.follow == true
     Long sn = pairedSerial()
-    String cur = settings.bridgeIp?.trim()
+    String cur = linkIp()                                 // where the link is trying, not the field (it may be mid-edit)
+    // Following: the browse may list other systems but not the paired one; the listener may have it. A live browse that
+    // lists it (at any address) outranks the listener's cache, which can hold an address it had before.
+    if (follow && sn != null && !sys.any { it.serial != null && (it.serial as Long) == sn }) {
+        sys = mergeByIp(sys + listenerSystems())
+    }
+    if (sys) atomicState.systems = sys
     // The paired bridge can be listed both at the failing address (a stale entry, as while it restarts) and at its new
     // one: follow the new one; while only the failing one is listed, read on.
-    List<Map> mine = (f.follow && sn != null) ? sys.findAll { it.serial != null && (it.serial as Long) == sn } : []
+    List<Map> mine = (follow && sn != null) ? sys.findAll { it.serial != null && (it.serial as Long) == sn } : []
     Map pick = mine.find { it.ip != cur } ?: (mine ? mine[0] : null)
     boolean moved = pick != null && pick.ip != cur
-    boolean done = f.follow ? (moved || reads >= FIND_READS) : (!sys.isEmpty() || reads >= FIND_READS)
-    atomicState.find = [active: !done, reads: reads, follow: f.follow, quiet: f.quiet, at: now()]
+    boolean done = follow ? (moved || reads >= FIND_READS) : (!sys.isEmpty() || reads >= FIND_READS)
+    atomicState.find = [active: !done, reads: reads, follow: follow, quiet: f.quiet, at: now()]
     if (!done) { runIn(FIND_EVERY_SECS, "findTick"); return }
     Closure say = f.quiet ? { String m -> logDebug m } : { String m -> logInfo m }
     if (sys) say("Lutron systems found: ${sys.collect { it.ip }.join(', ')}")
     else say("No Lutron system found on the network (${reads} looks)")
-    if (f.follow) {
+    if (follow) {
         if (pick) followTo(pick.ip.toString())
         if (!moved && sn != null) say("The paired bridge wasn't found at a new address; it keeps trying ${cur}")
     } else if (sys) {
@@ -809,13 +1013,17 @@ void findTick() {
 
 // The bridge was found at this address (by its serial): a new one is saved, and the bridge connects there.
 void followTo(String ip) {
-    String old = settings.bridgeIp?.trim()
+    String old = linkIp()
     if (ip == old) { logDebug "The bridge is still at ${ip}"; return }
-    setBridgeIp(ip)
+    if (settings.bridgeIp?.trim() != ip) setBridgeIp(ip)
     atomicState.lastBridgeIp = ip
+    updateCred(ip: ip)
     logWarn "The bridge moved from ${old ?: '(no address)'} to ${ip}"
     bridgeDevice()?.connectSoon()
 }
+
+// The address the bridge device connects to with the kept pairing (leapCredentials): its own, else the field
+String linkIp() { credRecord().ip?.toString() ?: settings.bridgeIp?.trim() }
 
 // Exactly one system found and no address set yet: it is the one
 void autoPick(List<Map> sys) {
@@ -874,14 +1082,8 @@ String otherSystemText() {
     String ip = settings.bridgeIp?.trim()
     Map m = ((List) atomicState.systems ?: []).find { it.ip == ip }
     if (sn == null || m?.serial == null || (m.serial as Long) == sn) return null
-    return "<b>This isn't the Lutron system the app is paired with: pair again</b> (Re-pair with Lutron), or pick the paired one."
-}
-
-// Hub start: the listener again, and one look for the paired bridge (it may have moved while the hub was down)
-void hubStarted(Object evt) {
-    logDebug "Hub started"
-    listenMdns()
-    if (credentialsPresent() && pairedSerial() != null) startFind(true)
+    return lutronChildren() ? "<b>This isn't the Lutron system this app's devices belong to</b>: pick the paired one, or add this system in a new app instance." :
+                              "<b>This isn't the Lutron system the app is paired with: pair again</b> (Re-pair with Lutron), or pick the paired one."
 }
 
 // From the bridge device: it has failed to connect for about 2 minutes, and then at each 2-minute retry. Look for it;
@@ -911,6 +1113,12 @@ void bridgeUnreachable(Object first = true) {
 // next connect when the bridge isn't connected (its resync reads every zone), rather than warning
 @Field static ConcurrentHashMap<Long, Boolean> adding = new ConcurrentHashMap<>()
 
+// The device with this DNI, or null. Never the bridge device itself.
+Object childByDni(String dni) { (dni == null || dni == app.id.toString()) ? null : getChildDevice(dni) }
+
+// Every zone and Pico device (all children but the bridge device)
+List lutronChildren() { (getChildDevices() ?: []).findAll { it.deviceNetworkId?.toString() != app.id.toString() } }
+
 // Every zone and Pico in the bridge's last device list, keyed by what its DNI is made from (z<zoneId>, d<deviceId>),
 // never by name. kind: dimmer, switch or pico; null for zone types we don't drive yet (fans, shades).
 List<Map> bridgeEntries() { entriesOf((Map) atomicState.discovery) }
@@ -923,25 +1131,36 @@ List<Map> entriesOf(Map d) {
                 type: (z.deviceType ?: z.control)?.toString(), deviceType: z.deviceType, model: z.model, deviceHref: z.deviceHref,
                 location: z.location]
     }
+    // Each button's Hubitat number (n) comes from the bridge, which routes the events by it; numberOfButtons is the
+    // highest, as Hubitat's buttons run 1..N. The numbers can have gaps (a keypad's do), so the device gets
+    // its own list too (lutronButtons, "button:Lutron number"), as a keypad does.
     d.picos?.each { Map pc ->
-        Integer n = pc.buttons ? pc.buttons.collect { (it.number as Integer) + 1 }.max() : 0
+        List bs = (List) pc.buttons ?: []
+        List<Integer> ns = bs.collect { hubitatButton(it, (it.number as Integer) + 1) }
         out << [key: "d${pc.id}".toString(), id: pc.id, kind: "pico", name: pc.name, area: pc.area, type: pc.deviceType?.toString(),
-                deviceType: pc.deviceType, model: pc.model, buttons: n, location: pc.location]
+                deviceType: pc.deviceType, model: pc.model, buttons: ns ? ns.max() : 0, location: pc.location,
+                lutronButtons: bs.collect { "${hubitatButton(it, (it.number as Integer) + 1)}:${it.number}" }.join(",")]
     }
-    // RA3: keypads (buttons 1..N in Lutron's order, as the bridge numbers them) and the areas with occupancy sensors
+    // RA3: keypads (each button is Lutron's own number) and the areas with occupancy sensors
     d.keypads?.each { Map k ->
         List bs = (List) k.buttons ?: []
+        List<Integer> ns = bs.collect { hubitatButton(it, it.number as Integer) }
         out << [key: "d${k.id}".toString(), id: k.id, kind: "keypad", name: k.name, area: k.area, type: k.deviceType?.toString(),
-                deviceType: k.deviceType, model: k.model, buttons: bs.size(), location: k.location,
-                ledButtons: bs.withIndex().findAll { b, i -> b.led != null }.collect { b, i -> i + 1 }.join(","),
-                lutronButtons: bs.withIndex().collect { b, i -> "${i + 1}:${b.number}" }.join(",")]
+                deviceType: k.deviceType, model: k.model, buttons: ns ? ns.max() : 0, location: k.location,
+                ledButtons: bs.findAll { it.led != null }.collect { hubitatButton(it, it.number as Integer) }.join(","),
+                lutronButtons: bs.collect { "${hubitatButton(it, it.number as Integer)}:${it.number}" }.join(",")]
     }
     d.occupancy?.each { Map o ->
-        out << [key: "a${o.id}".toString(), id: o.id, kind: "motion", name: "Motion", area: o.name, type: "Occupancy",
+        // Caseta's occupancy (by occupancy group) is built from pylutron-caseta and a bridge with no sensors: untested
+        String occType = (d.system?.deviceType?.toString() == "SmartBridge") ? "Occupancy, untested" : "Occupancy"
+        out << [key: "a${o.id}".toString(), id: o.id, kind: "motion", name: "Motion", area: o.name, type: occType,
                 sensors: o.sensors ? ((List) o.sensors).join(",") : null, location: o.location]
     }
     return out
 }
+
+// A button's Hubitat number from the bridge's list; a list saved before the bridge gave one has the fallback
+Integer hubitatButton(Map b, Integer fallback) { (b?.n != null) ? (b.n as Integer) : fallback }
 
 // The data values the app gives a device, shown on its page as "Lutron Device Type" and so on. lutronDeviceHref only
 // on zone devices: the Lutron device controlling the zone (the zone itself is in the DNI).
@@ -966,9 +1185,22 @@ String deviceLabel(Object area, Object name) {
     return "${a} ${n}".toString()
 }
 
-// The label a new device gets, from the Name new devices option (kept while the options are hidden)
-String labelFor(Map e) {
-    return (settings.nameStyle == "name") ? (e.name?.toString()?.trim() ?: "Lutron device") : deviceLabel(e.area, e.name)
+// The label a new device gets, from the Name new devices option (kept while the options are hidden); style: a device's
+// own (nameStyleOf), so changing the option doesn't rename devices that exist
+String labelFor(Map e, String style = null) {
+    String st = style ?: settings.nameStyle?.toString()
+    return (st == "name") ? (e.name?.toString()?.trim() ?: "Lutron device") : deviceLabel(e.area, e.name)
+}
+
+// The naming style a device was made with (data value lutronNameStyle). A device from before it was kept: the style its
+// name matches now, kept from then on
+String nameStyleOf(Object ch, Map e) {
+    String st = ch.getDataValue("lutronNameStyle")
+    if (st in ["room", "name"]) return st
+    String n = ch.name?.toString()
+    st = (n == labelFor(e, "name") && n != labelFor(e, "room")) ? "name" : (n == labelFor(e, "room") ? "room" : (settings.nameStyle?.toString() == "name" ? "name" : "room"))
+    ch.updateDataValue("lutronNameStyle", st)
+    return st
 }
 
 Map roomOptions() {
@@ -1018,7 +1250,7 @@ String addedText() {
     if (!kids) return "None yet."
     Map byKey = bridgeEntries().collectEntries { [(it.key): it] }
     Map d = (Map) atomicState.discovery
-    boolean empty = d != null && !d.zones && !d.picos
+    boolean empty = d != null && !d.zones && !d.picos && !d.keypads && !d.occupancy
     List<String> lines = kids.collect { ch ->
         Map e = (Map) byKey[keyOfDni(ch.deviceNetworkId.toString())]
         String where = e ? esc(deviceLabel(e.area, e.name)) : (d == null || empty ? "?" : "<b>not on the bridge any more</b>")
@@ -1031,7 +1263,7 @@ String addedText() {
 // DNIs of the app's devices that aren't in the bridge's last list (none when that list was empty)
 List<String> missingDnis() {
     Map d = (Map) atomicState.discovery
-    if (!d || (!d.zones && !d.picos)) return []
+    if (!d || (!d.zones && !d.picos && !d.keypads && !d.occupancy)) return []
     Set<String> keys = bridgeEntries().collect { it.key } as Set
     return lutronChildren().collect { it.deviceNetworkId.toString() }.findAll { !(keyOfDni(it) in keys) }
 }
@@ -1077,6 +1309,7 @@ Map addDevices(List<String> keys) {
             counts.created++
             added << dni
             lutronData(e).each { dk, dv -> if (dv != null) ch.updateDataValue(dk.toString(), dv.toString()) }
+            ch.updateDataValue("lutronNameStyle", settings.nameStyle?.toString() == "name" ? "name" : "room")   // this device's, for good
             List<Map> evts = [[name: "healthStatus", value: health, descriptionText: "${label} healthStatus is ${health}".toString()]]
             if (e.kind in ["pico", "keypad"]) evts << [name: "numberOfButtons", value: e.buttons ?: 0, descriptionText: "${label} numberOfButtons is ${e.buttons ?: 0}".toString()]
             ch.parse(evts)
@@ -1101,7 +1334,7 @@ void componentOff(Object cd) { bridgeFor(cd)?.componentOff(cd) }
 void componentSetLevel(Object cd, Object level, Object secs = null) { bridgeFor(cd)?.componentSetLevel(cd, level, secs) }
 void componentStartLevelChange(Object cd, Object direction) { bridgeFor(cd)?.componentStartLevelChange(cd, direction) }
 void componentStopLevelChange(Object cd) { bridgeFor(cd)?.componentStopLevelChange(cd) }
-void componentFlash(Object cd, Object rateMs = null) { bridgeFor(cd)?.componentFlash(cd, rateMs) }
+void componentFlash(Object cd, Object rateMs = null, Object limitSecs = null) { bridgeFor(cd)?.componentFlash(cd, rateMs, limitSecs) }
 void componentPush(Object cd, Object n, Object times = 1) { bridgeFor(cd)?.componentPush(cd, n, times) }
 void componentSetLed(Object cd, Object n, Object value) { bridgeFor(cd)?.componentSetLed(cd, n, value) }
 
@@ -1122,29 +1355,54 @@ Object bridgeFor(Object cd) {
 }
 
 /*******************************************************************
- ***** Called by the bridge device: the app's devices
+ ***** Pairing: its state, the start, the bridge's reports, the new certificate's trial, Cancel and Clear
 ********************************************************************/
-// The device with this DNI, or null. Never the bridge device itself.
-Object childByDni(String dni) { (dni == null || dni == app.id.toString()) ? null : getChildDevice(dni) }
+boolean pairingBusy() {
+    Map p = (Map) atomicState.pairing
+    return p?.phase in BUSY_PHASES && !pairingStopped(p)
+}
 
-// Every zone and Pico device (all children but the bridge device)
-List lutronChildren() { (getChildDevices() ?: []).findAll { it.deviceNetworkId?.toString() != app.id.toString() } }
+// A phase past its limit (PHASE_LIMIT_MS): whatever was to end it is gone, so the pairing is over
+boolean pairingStopped(Map p) {
+    Long limit = PHASE_LIMIT_MS[p?.phase?.toString()]
+    return limit != null && (p.at == null || now() - (p.at as Long) >= limit)
+}
 
-/*******************************************************************
- ***** Pairing
-********************************************************************/
+// A Cancel less than CANCEL_COOLDOWN_MS ago: its attempt may still be finishing, so Pair waits
+boolean coolingDown() {
+    Object at = atomicState.cancelledAt
+    return at != null && now() - (at as Long) < CANCEL_COOLDOWN_MS
+}
+
 // Creates the bridge device if needed (no Done required), then makes the key in its own execution
 // (2-9 s on the hub) so the page answers at once.
 void startPairing() {
-    if (!settings.bridgeIp?.trim()) { logErr "Set the bridge IP address first"; return }
-    if (ensureBridge() == null) { logErr "No bridge device: is the '${BRIDGE_DRIVER}' driver installed?"; return }
-    atomicState.pairing = [phase: "making key", at: now()]
-    runIn(1, "makeKeyAndPair")
+    String busyMsg = "Pair: a pairing is under way; Cancel it first to start again"
+    String claim = app.id.toString()
+    // One start at a time (pairStarts), and one pairing at a time: a page shown before this one began (another tab)
+    // can still offer Pair
+    if (pairStarts.putIfAbsent(claim, true) != null) { logWarn busyMsg; return }
+    try {
+        if (pairingBusy()) { logWarn busyMsg; return }
+        if (coolingDown()) { logWarn "Pair: the pairing just cancelled is still finishing; Pair again in a few seconds"; return }
+        if (!settings.bridgeIp?.trim()) { logErr "Set the bridge IP address first"; return }
+        if (ensureBridge() == null) { logErr "No bridge device: is the '${BRIDGE_DRIVER}' driver installed?"; return }
+        atomicState.pairing = [phase: "making key", at: now()]
+        String attempt = UUID.randomUUID().toString()
+        atomicState.pairAttempt = attempt
+        // the address as Pair was clicked: the field stays editable while the key is made
+        runIn(1, "makeKeyAndPair", [data: [attempt: attempt, ip: settings.bridgeIp.trim()]])
+        logInfo "Pairing: started (Pair) for ${settings.bridgeIp.trim()}; making the key"
+    } finally {
+        pairStarts.remove(claim)
+    }
 }
 
-void makeKeyAndPair() {
+// attempt: the pairing this key is for. Cancel can come while the key is being made (2-9 s): the run already going
+// then finds the attempt gone, and neither keeps the key nor opens the pairing port.
+void makeKeyAndPair(Map data = null) {
     Object b = bridgeDevice()
-    if (b == null) { pairingFailed("no bridge device"); return }
+    if (b == null) { pairingFailed("no bridge device", data?.attempt?.toString()); return }
     String keyPem, csrPem, pubB64
     try {
         long t0 = now()
@@ -1157,7 +1415,11 @@ void makeKeyAndPair() {
         pubB64 = kp.getPublic().getEncoded().encodeBase64().toString()
         logInfo "Key and CSR made in ${now() - t0} ms"
     } catch (Exception e) {
-        pairingFailed("making the key or CSR: ${e.message}")
+        pairingFailed("making the key or CSR: ${e.message}", data?.attempt?.toString())
+        return
+    }
+    if (data?.attempt?.toString() != atomicState.pairAttempt?.toString()) {
+        logInfo "Pairing: cancelled while the key was being made; the key is discarded"
         return
     }
     removePending()
@@ -1165,9 +1427,35 @@ void makeKeyAndPair() {
     atomicState.pendingPubKey = pubB64
     // Before the bridge starts: its "requesting certificate" report must come after this, never before
     atomicState.pairing = [phase: "press the bridge button", at: now()]
-    String err = b.startPairing(settings.bridgeIp.trim(), csrPem, CSR_COMMON_NAME, pairingCa(settings.bridgeIp.trim()))
-    if (err) { pairingFailed(err); return }
+    String pairAt = data?.ip?.toString() ?: settings.bridgeIp.trim()
+    seedCredIp()                                         // the kept pairing's address, before the field can lead it astray
+    atomicState.pairIp = pairAt                          // the certificate from this pairing goes with this address
+    String err = b.startPairing(pairAt, csrPem, CSR_COMMON_NAME, pairingCa(pairAt), data?.attempt?.toString())
+    // Cancel can run between the attempt check above and the hand-off: the attempt governs the hand-off too
+    if (data?.attempt != null && atomicState.pairAttempt?.toString() != data.attempt.toString()) {
+        if (!err) b.cancelPairing(data.attempt.toString())   // only this attempt's session (a newer one's is left alone)
+        // the shared pending key and status belong to a newer attempt if one has started since: left to it
+        if (atomicState.pairAttempt == null) {
+            removePending()
+            atomicState.pairing = [phase: "failed", detail: "cancelled", at: now()]
+        }
+        logInfo "Pairing: cancelled while it was being handed to the bridge"
+        return
+    }
+    if (err) { pairingFailed(err, data?.attempt?.toString()); return }
     logInfo "Pairing: press the small black button on the back of the bridge"
+}
+
+// The kept pairing's address, for an install from before it was kept: the address the system was last verified at,
+// else the bridge device's address while its link is verified (networkStatus online: set at the identity check; the
+// device shows an address before connecting, which may be one that failed), else the address last saved. Never the
+// field, which may be mid-edit.
+void seedCredIp() {
+    if (credRecord().ip || !credentialsPresent()) return
+    Object b = bridgeDevice()
+    String live = (b?.currentValue("networkStatus")?.toString() == "online") ? b.currentValue("ipAddress")?.toString() : null
+    String at = atomicState.verifiedIp?.toString() ?: live ?: atomicState.lastBridgeIp?.toString()
+    if (at) updateCred(ip: at)
 }
 
 // The CA the bridge device checks the system against while pairing: the LAP CA for a Smart Bridge (and for a system
@@ -1179,19 +1467,213 @@ String pairingCa(String ip) {
     return (t && t != "SmartBridge") ? "lutron" : "lap"
 }
 
-void cancelPairing() {
-    bridgeDevice()?.cancelPairing()
-    removePending()
-    atomicState.pairing = [phase: "failed", detail: "cancelled", at: now()]
-    unschedule("makeKeyAndPair")
+// The bridge reports from its own execution, so Cancel can run at the same moment: the attempt is checked again after
+// the write, and a Cancel meanwhile keeps its "cancelled" (the page would otherwise stay busy). forAttempt: the attempt
+// the bridge's pairing session belongs to; a report for any other is ignored.
+void pairingProgress(String phase, String forAttempt = null) {
+    String attempt = atomicState.pairAttempt?.toString()
+    if (attempt == null || (forAttempt != null && forAttempt != attempt) || !pairingBusy()) return
+    atomicState.pairing = [phase: phase, at: now()]
+    if (atomicState.pairAttempt?.toString() != attempt) {
+        if (atomicState.pairAttempt == null) atomicState.pairing = [phase: "failed", detail: "cancelled", at: now()]
+        return
+    }
+    logInfo "Pairing: ${phase}"
 }
 
-void clearPairing() {
-    bridgeDevice()?.disconnect()
-    removeCredentials()
+// The signed certificate and the bridge's root. Kept only if the certificate holds our public key and
+// parses; returns whether it was kept (the bridge connects only then).
+// caPem: the CA the LEAP connection is checked against when it isn't the root the bridge sent (RA3: the Lutron root)
+// forAttempt: the attempt the bridge's pairing session belongs to; a certificate for any other is ignored before anything
+// is read or changed (it may come late, after that attempt was cancelled and a new one started)
+Boolean pairingResult(String certPem, String rootPem, String caPem = null, String forAttempt = null) {
+    String attempt = atomicState.pairAttempt?.toString()     // the pairing this certificate is for (the pending key's)
+    if (forAttempt != null && forAttempt != attempt) {
+        logInfo "Pairing: a certificate for a pairing that has ended arrived; ignored"
+        return false
+    }
+    String pendingStore = atomicState.pendingStore
+    String keyPem = pendingStore ? getSecret(PENDING_KEY, pendingStore) : null
+    String pubB64 = atomicState.pendingPubKey
+    if (!keyPem || !pubB64 || attempt == null) {
+        logWarn "A certificate arrived with no pairing in progress; ignored"
+        return false
+    }
+    try {
+        X509Certificate cert = parseCert(certPem)
+        if (cert.getPublicKey().getEncoded().encodeBase64().toString() != pubB64) {
+            failAttempt(attempt, "the certificate is not for the key made here")
+            return false
+        }
+        String signedBy
+        try { cert.verify(parseCert(rootPem).getPublicKey()); signedBy = "signed by the bridge's root" }
+        catch (Exception e) { signedBy = "NOT signed by the root it came with (${e.message})" }
+        logInfo "Certificate '${cert.getSubjectX500Principal().getName()}' expires ${cert.getNotAfter().format('yyyy-MM-dd')}, ${signedBy}"
+    } catch (Exception e) {
+        failAttempt(attempt, "the certificate doesn't parse: ${e.message}")
+        return false
+    }
+    // Kept apart until the bridge's LEAP port takes them (credentialsWorked): a certificate that doesn't work there
+    // mustn't replace a pairing that does
+    storeCandidate(keyPem, certPem, caPem ?: rootPem)
+    atomicState.candIp = atomicState.pairIp ?: settings.bridgeIp?.trim()   // where it paired: its trial goes there
+    // Cancel can run while the certificate is checked and stored (it found no candidate yet, so it ended no trial): it
+    // wins. Checked before the status is written (a newer attempt's status is never overwritten) and again after it (a
+    // Cancel in between is seen; one after finds the candidate). The pending key, possibly a newer attempt's, is
+    // touched only after both.
+    if (pairingEnded(attempt)) return false
+    atomicState.pairing = [phase: "checking the new certificate", at: now()]
+    runIn(TRIAL_SECS, "trialExpired")
+    if (pairingEnded(attempt)) return false
     removePending()
-    atomicState.remove("pairing")
-    logInfo "Pairing cleared (the bridge still lists the integration until it is removed in the Lutron app)"
+    // The bridge connects to this IP next: a later Done with the same IP leaves that link alone (the address it paired
+    // at, not the field: a different address typed meanwhile is still moved to by the next Done)
+    atomicState.lastBridgeIp = atomicState.candIp
+    logInfo "Pairing: certificate received; checking it on the bridge's LEAP port before keeping it"
+    return true
+}
+
+// A certificate of this attempt failed: the pairing fails, unless the attempt has ended meanwhile (the pending key and
+// status may be a newer attempt's by then)
+void failAttempt(String attempt, String why) {
+    if (!pairingEnded(attempt)) pairingFailed(why, attempt)
+}
+
+// The certificate's attempt was cancelled while it was being kept: its candidate goes (claimed, as any settling of a
+// trial), and its status says cancelled unless a newer attempt has started. True when it ended.
+boolean pairingEnded(String attempt) {
+    if (atomicState.pairAttempt?.toString() == attempt) return false
+    unschedule("trialExpired")
+    if (atomicState.candStore && claimTrial()) removeCandidate()
+    if (atomicState.pairAttempt == null) atomicState.pairing = [phase: "failed", detail: "cancelled", at: now()]
+    logInfo "Pairing: cancelled while the certificate was being kept; it is discarded"
+    return true
+}
+
+// forAttempt: as for pairingProgress; a failure of another attempt (one that has ended) leaves the current one alone
+void pairingFailed(String why, String forAttempt = null) {
+    if (forAttempt != null && forAttempt != atomicState.pairAttempt?.toString()) {
+        logDebug "Pairing: a failure of a pairing that has ended (${why}); ignored"
+        return
+    }
+    // a certificate stored as the candidate before the failure (its trial never set) goes with it; claimed, as any
+    // settling of a trial, so a trial already being settled is left to that
+    if (atomicState.candStore && claimTrial()) { unschedule("trialExpired"); removeCandidate() }
+    removePending()
+    atomicState.pairing = [phase: "failed", detail: why, at: now()]
+    logWarn "Pairing failed: ${why}"
+}
+
+// From the bridge: the new credentials connected and the bridge's identity checked out: they become the pairing
+// Returns true only once they are kept: the bridge leaves its trial only then (false: none to keep, or the store failed)
+Boolean credentialsWorked() {
+    if (!claimTrial()) return false                      // the trial was settled meanwhile (expired, cancelled, failed)
+    // Claimed: no one else can settle this trial now, so every way out of here settles it
+    unschedule("trialExpired")
+    Map c = readCandidate()
+    if (c == null) {
+        removeCandidate()
+        String kept = credentialsPresent() ? "; the previous pairing is kept" : ""
+        atomicState.pairing = [phase: "failed", detail: "the new certificate couldn't be read back${kept}".toString(), at: now()]
+        logWarn "Pairing failed: the new certificate couldn't be read back${kept}"
+        return false
+    }
+    String slot = candidateSlot()                        // the candidate's slot, fixed before anything changes
+    try {
+        useCandidate(c, slot)
+    } catch (Exception e) {
+        if (activeSlot() == slot && credentialCheck() == "intact") {
+            // the switch was committed (one write) before the failure: the new pairing is the one in use
+            logWarn "Pairing: the new certificate is in use; tidying up after it failed (${e.message?.take(80)})"
+            atomicState.remove("candStore")
+            atomicState.remove("candIp")
+            atomicState.pairing = [phase: "paired", at: now()]
+            tidyPairing()
+            return true
+        }
+        // not switched: only the candidate's own slot is cleared (fixed above, never worked out again)
+        CRED_SLOTS[slot].each { String k -> try { removeSecret(k) } catch (Exception ignored) { } }
+        atomicState.remove("candStore")
+        atomicState.remove("candIp")
+        String kept = credentialsPresent() ? "; the previous pairing is kept" : ""
+        atomicState.pairing = [phase: "failed", detail: "the new certificate couldn't be kept (${e.message?.take(80)})${kept}".toString(), at: now()]
+        logWarn "Pairing failed: the new certificate couldn't be kept (${e.message?.take(80)})${kept}"
+        return false
+    }
+    atomicState.pairing = [phase: "paired", at: now()]
+    tidyPairing()
+    logInfo "Paired; credentials kept in ${credRecord().store == 'settings' ? 'password settings' : 'state'}"
+    return true
+}
+
+// A pairing that ended as paired leaves nothing of itself: its attempt, its address and the trial's id. (After a
+// failure the attempt's id stays, so a late report of that attempt is still known for what it is.)
+void tidyPairing() {
+    ["pairAttempt", "pairIp", "candId"].each { atomicState.remove(it) }
+}
+
+// From the bridge: the new credentials didn't connect (why: the connect error, never a secret). The pairing before, if
+// any, stays.
+void candidateFailed(String why) {
+    if (!atomicState.candStore || !claimTrial()) return
+    unschedule("trialExpired")
+    removeCandidate()
+    String kept = credentialsPresent() ? "; the previous pairing is kept" : ""
+    atomicState.pairing = [phase: "failed", detail: "the new certificate didn't work on the bridge's LEAP port (${why})${kept}".toString(), at: now()]
+    logWarn "Pairing failed: the new certificate didn't work on the bridge's LEAP port (${why})${kept}"
+}
+
+// The trial's deadline: a candidate the bridge hasn't confirmed or rejected by now is dropped, and the bridge goes back
+// to the pairing before (or stops, with none). A late answer from the bridge finds no candidate and is ignored.
+void trialExpired() {
+    if (!atomicState.candStore || !claimTrial()) return   // a promotion (or Cancel) under way has it
+    removeCandidate()
+    String kept = credentialsPresent() ? "; the previous pairing is kept" : ""
+    String detail = "the new certificate didn't connect within ${(int) (TRIAL_SECS / 60)} minutes on the bridge's LEAP port${kept}"
+    atomicState.pairing = [phase: "failed", detail: detail, at: now()]
+    logWarn "Pairing failed: ${detail}"
+    bridgeDevice()?.cancelTrial()
+}
+
+// Cancel covers the whole pairing: the key, the pairing port, and the new certificate's trial on the LEAP port
+void cancelPairing() {
+    // A page shown during a pairing still offers Cancel after it ended
+    if (!pairingBusy()) { logDebug "Cancel: no pairing under way"; return }
+    logInfo "Pairing: cancelled (Cancel pairing)"
+    atomicState.cancelledAt = now()                      // Pair waits for this attempt's work to end (coolingDown)
+    unschedule("makeKeyAndPair")
+    atomicState.remove("pairAttempt")                    // a key generation already running finds it gone
+    unschedule("trialExpired")
+    // a trial being promoted right now is left to finish (it claimed the trial first)
+    boolean onTrial = atomicState.candStore != null && claimTrial()
+    if (onTrial || atomicState.candStore == null) removeCandidate()   // before the bridge reconnects: it asks for the credentials
+    removePending()
+    atomicState.pairing = [phase: "failed", detail: "cancelled", at: now()]
+    bridgeDevice()?.cancelPairing()
+    if (onTrial) bridgeDevice()?.cancelTrial()
+}
+
+// Not during a pairing (Cancel first; a page shown before it began can still offer Clear). Takes the same claim as
+// startPairing, so a Clear and a Pair at the same moment can't interleave.
+void clearPairing() {
+    String claim = app.id.toString()
+    String busyMsg = "Clear pairing: a pairing is under way; Cancel it first"
+    if (pairStarts.putIfAbsent(claim, true) != null) { logWarn busyMsg; return }
+    try {
+        if (pairingBusy()) { logWarn busyMsg; return }
+        // a key job past its time limit may still be running: its attempt ends here, so it opens nothing afterwards
+        unschedule("makeKeyAndPair")
+        atomicState.remove("pairAttempt")
+        atomicState.remove("pairIp")
+        bridgeDevice()?.disconnect()
+        removeCredentials()
+        removeCandidate()
+        removePending()
+        atomicState.remove("pairing")
+        logInfo "Pairing cleared (the bridge still lists the integration until it is removed in the Lutron app)"
+    } finally {
+        pairStarts.remove(claim)
+    }
 }
 
 /*******************************************************************
@@ -1299,6 +1781,7 @@ String fmtTime(Long ms) {
 
 void checkLogLevel(Map levelInfo = [level:null, time:null]) {
     unschedule("logsOff")
+    state.remove("logsOffAt")
     if (settings.logLevel == null) {
         app.updateSetting("logLevel", [value:"3", type:"enum"])
         levelInfo.level = 3
@@ -1307,11 +1790,15 @@ void checkLogLevel(Map levelInfo = [level:null, time:null]) {
         app.updateSetting("logLevelTime", [value:"30", type:"enum"])
         levelInfo.time = 30
     }
-    if (levelInfo.level == null) levelInfo = getLogLevelInfo()
+    // what wasn't just defaulted comes from the settings: a level defaulted beside a stored time still gets its timer
+    Map stored = getLogLevelInfo()
+    if (levelInfo.level == null) levelInfo.level = stored.level
+    if (levelInfo.time == null) levelInfo.time = stored.time
     String logMsg = "Logging Level is: ${LOG_LEVELS[levelInfo.level]} (${levelInfo.level})"
     if (levelInfo.level >= 3 && levelInfo.time > 0) {
         logMsg += " for ${LOG_TIMES[levelInfo.time]}"
         runIn(60*levelInfo.time, "logsOff")
+        state.logsOffAt = now() + 60000L * levelInfo.time           // the deadline, kept apart from the job (checkLogsOff)
     }
     logInfo(logMsg)
     if (levelInfo.level <= 2) state.lastLogLevel = levelInfo.level
@@ -1324,12 +1811,22 @@ Map getLogLevelInfo() {
 }
 
 void logsOff() {
+    state.remove("logsOffAt")
     logWarn "Debug and Trace logging disabled..."
     if (logLevelInfo.level >= 3) {
         Integer lastLvl = state.lastLogLevel != null ? state.lastLogLevel as Integer : 2
         app.updateSetting("logLevel", [value:lastLvl.toString(), type:"enum"])
         logWarn "Logging Level is: ${LOG_LEVELS[lastLvl]} (${lastLvl})"
     }
+}
+
+// Debug and Trace end at their deadline even with no job to end them: the hub stores a preference's default when it
+// creates a device, without running updated(), and a job can be lost. Called where this code runs anyway.
+void checkLogsOff() {
+    Map info = getLogLevelInfo()
+    if (info.level < 3 || info.time <= 0) return
+    if (state.logsOffAt == null) checkLogLevel()          // no deadline yet: its time starts now
+    else if (now() >= (state.logsOffAt as Long)) logsOff()
 }
 
 void logErr(String msg) {
