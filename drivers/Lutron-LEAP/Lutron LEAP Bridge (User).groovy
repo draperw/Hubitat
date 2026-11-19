@@ -11,94 +11,44 @@
  *  Tested on 2.5.3.
  *
  *  Changelog:
+ *  ## [1.0.2] - 2026-11-18
+ *    - Each Pico's battery state (batteryStatus: good, low or unknown), read from the bridge or processor at each
+ *      connect, every 10 minutes and when a Pico is added.
+ *    - An interim answer ("102 Processing") no longer ends a request: it waits for the real answer. A second answer
+ *      to a request already answered is recognised instead of being taken for an event.
+ *    - Caseta: a device renamed or moved to another room in the Lutron app is noticed at once (the bridge pushes its
+ *      device list), no longer at the next 10-minute check, which still runs and still covers scenes.
+ *    - Flash: the device keeps the switch and level it had for the whole flash (a light that was off shows off while
+ *      it flashes), and shows the real state once what ended the flash is answered and the zone read. After a lost
+ *      connection the light goes back to how it was before the flash if the link is back within a minute, whatever
+ *      level it is found at.
+ *    - A Pico's Double Tap sends its two presses together (the system does them one after the other), no longer the
+ *      second when the first one's release is reported. Two Double Taps on a button at once are four presses, and one
+ *      on a button whose subscription failed goes as a Push does.
+ *    - Caseta: the 10-minute check and each connect read the devices in full and compare the whole list with the last
+ *      one (one log line, "The bridge's devices, scenes or rooms changed"), where devices, scenes and occupancy groups
+ *      were each compared on their own. A failed read at the check is logged at Debug; the next check reads again.
+ *    - Read URL, Subscribe URL and Probe Host are gone from the bridge device: development tools nothing else used
+ *      (a subscription made by hand could take the changes from the bridge's own, and its devices stopped updating).
+ *      Set Zone Level stays.
  *  ## [1.0.1] - 2026-11-12
  *    - Pico buttons numbered as Hubitat's Lutron integrations (Telnet and LEAP): on 1, raise 2, favourite 3, lower 4,
- *      off 5; a 2-button or paddle Pico on 1, off 2. A Pico whose Double-tap window is unsaved waits 0.75 s for a second
- *      press, as its preference's default. Keypad buttons by Lutron's own numbers (raise / lower 18 / 19; tabletops 16,
- *      17, 24, 25), LEDs by their button's number. A button map saved with the old numbering is read again at the next
- *      connect; if that read fails the link reconnects instead of running on the old map, and the 10-minute check tries
- *      it again.
- *    - A connection ending while a button is down: a held button (or a Fast Pico or keypad button) is released at once,
- *      so a ramp started on held stops; a press not yet held is dropped (no held after the drop). Button timers carry
- *      their session.
- *    - Occupancy (RA3) is subscribed only while an occupancy device exists, and a failed subscription no longer drops
- *      the link: one Warn per connection, tried again every 10 minutes.
- *    - The bridge's identity (its serial number) is checked first at each connect: until then no command is sent (held
- *      ones wait) and no push is applied; another Lutron system while the app has devices stops the link, and an
- *      answer from the app other than ok or new (a serial it can't read) reconnects.
- *    - A resync that can't read the system's type, its identity, a first device list or the zone status reconnects
- *      instead of reporting connected; a reconnect whose /project read fails keeps the type last seen.
- *    - A refused button or LED subscription is subscribed again at the 10-minute check (one Warn).
- *    - Pairing: the retry with the other CA keeps its deadline; new credentials are on trial until they connect, and
- *      the app's Cancel or the trial's deadline ends the trial: the link goes back to the pairing before. So does a
- *      pairing cancelled or failed before a certificate; a late answer from a cancelled attempt, or an old socket's
- *      status while the pairing port is checked, is ignored.
- *    - A flash has a time limit (from the dimmer; 60 s if none), kept to the second: it then stops and the zone goes
- *      back to how it was, as it does after a step the bridge refuses or doesn't answer; the zone's status is read
- *      after (answered or not). During a flash the device shows on: the steps' reports don't reach it.
- *    - Every connect, pairing included, first checks that the address answers (an async request): a blocking connect to
- *      a host that drops packets stops socket data for every driver on the hub for ~30 s. A connect goes only to the
- *      address that answered, and one meant to replace the link (a new address) still does after a failed check.
- *    - Capability NetworkDevice: networkStatus (online once the link is up and the identity checked), ipAddress,
- *      lastUpdated.
- *    - After a driver code save the old socket's read timeout can still arrive; one that comes sooner than 25 s after
- *      the current link's last data (or during the address check) is ignored instead of failing the new link.
- *    - Caseta occupancy (untested): /occupancygroup read with the devices; a room's group with sensors becomes a motion
- *      device, fed by the /occupancygroup/status subscription. A failed read keeps the rooms as they were; the
- *      10-minute check reads the groups again, notices sensors moving between rooms, and after an upgrade reads the
- *      devices once if the bridge has rooms with sensors.
- *    - A Discover while one is reading joins it instead of breaking both. healthStatus is online once the resync
- *      completes (not at the first ping) and offline on Disconnect or a resync that keeps failing (a refused zone
- *      subscription included). A flash cut short by the connection ending goes back to how it was if the link is back
- *      within a minute, the zone got no command and the light is still where the flash left it.
- *    - Commands held for the link aren't sent to another Lutron system the app takes (Warn each). A device added before
- *      the bridge's identity is checked is read by the resync, after the check. The identity check tells the app the
- *      address it was made at.
- *    - A bridge with no Picos (/button answered with an empty body) is discovered. Held commands stop at the first
- *      write that fails (the rest Warned, not sent). A scene's pushed comes when the bridge accepts it, held or not.
- *    - A button press held for the link goes once the buttons are subscribed again, so its event comes; a held Double
- *      Tap keeps its second press. One Double Tap per button at a time, and none on a button whose subscription
- *      failed (Warn). A press during the resync waits for the button subscriptions; a Double Tap whose first press is
- *      refused, or gets no Release within 5 s, leaves nothing pending, and can't clear a later one's.
- *    - A keep-alive (or Ping) answered with an error drops and reconnects the link, as one not answered does.
- *    - A new pairing that reaches another Lutron system goes back to the pairing before instead of stopping the link.
- *    - Commands with the link down join the reconnect under way, so a long outage still reaches offline and the
- *      address search. Ping and Connect wait while a pairing waits for the button. A Flash restore cut off by a drop is
- *      sent after the reconnect, again after another drop, until it is answered.
- *    - Held commands and flash undos aren't sent to a processor whose project changed (a Designer transfer); held
- *      commands expire on time. A restore is never held: the next resync checks the level before sending it. After a
- *      detected transfer no command, press or flash goes until the devices are read again (across reconnects), and a
- *      re-read that fails reconnects; so also for a transfer found by the 10-minute check, and for a reconnect whose
- *      /project gets no answer, or for routing kept with no modified time; meanwhile the processor's events don't reach
- *      the devices and gestures under way are dropped; a re-read on a live link then reads the status again.
- *    - Disconnect and pairing forget a flash undo still due.
- *    - A Release after the hold time is a hold even when the hold timer runs late.
- *    - An address check that can't be started ends the pairing (the link before comes back) or retries the reconnect
- *      (offline after the first retry, as a check that fails).
- *    - A keypad button gets a released at a drop only if it is known to send Releases (a programmed one sends Press
- *      only; the history goes with a Designer transfer). A tap, then a press in the double-tap window that becomes a
- *      hold, or is cut short by a drop: the tap is pushed, with its own type. One outage's drop log entry counts repeated
- *      checks and keeps at most 8. A failing check of a new address doesn't mark a working link offline.
- *    - A link that stops for good (another system, no pairing) goes offline. Flash starts only once the zone's status is
- *      in on this connection. A certificate the app can't take settles its pairing as failed. A pairing session belongs to
- *      the app's attempt: that attempt's Cancel closes only its own.
- *    - A press after the double-tap window, before its timer ran, keeps the press before it. A new certificate stays
- *      only once the app has kept it. A failed status read after a live re-read reconnects (an LED subscribes again).
- *    - Socket data is decoded as UTF-8 by whole lines, so a non-ASCII name split across chunks comes through intact.
- *    - While a processor's devices are read again, no zone, LED or occupancy status reaches a device, an answer to a read
- *      included.
- *    - A flash stopped just after an on step: that step's late 100% report doesn't reach the device, which keeps its level
- *      (so On goes back to the level from before the flash), unless the zone was told to go to 100%. The app is told
- *      which pairing attempt a certificate, a progress report or a failure is for, a socket that couldn't open included.
- *    - A command that stops a flash reads the zone afterwards, so the device shows the real state even when the command
- *      leaves the level where the flash's last step put it (Off at an off step, Stop Level Change).
- *    - Caseta: the 10-minute check also notices a room renamed, a device moved to another room, and scenes added, renamed
- *      or deleted (a new scene can be pushed once it is noticed).
- *    - A second Discover while the devices are being read says only that.
- *    - A processor's project answer is logged by its length only, at Debug and Trace: its name is the owner's own
- *      text and can identify the home.
- *    - Debug logging turns itself off: a new bridge's 30 minutes start when it is created (before, only Save Preferences
- *      started them, so a new bridge stayed at Debug), and the 10-minute check ends a Debug whose timer was lost.
+ *      off 5; a 2-button or paddle Pico on 1, off 2. Keypad buttons by Lutron's own numbers, LEDs by their button's.
+ *      A button map saved with the old numbering is read again at the next connect.
+ *    - Capability NetworkDevice: networkStatus, ipAddress, lastUpdated. healthStatus is online once the resync
+ *      completes and offline on Disconnect or a link that stops for good.
+ *    - The bridge's identity (its serial number) is checked at each connect before anything is sent; another Lutron
+ *      system while the app has devices stops the link.
+ *    - Every connect first checks that the address answers, so a dead address no longer stalls the hub's sockets.
+ *    - Pairing: new credentials are on trial until they connect; a pairing cancelled or failed goes back to the one
+ *      before.
+ *    - A flash has a time limit (from the dimmer; 60 s if none) and the zone goes back to how it was when it ends.
+ *    - Occupancy: subscribed only while an occupancy device exists; Caseta rooms with sensors become motion devices
+ *      (untested).
+ *    - Caseta: the 10-minute check notices rooms renamed, devices moved, and scenes added, renamed or deleted.
+ *    - A processor's project changed (a Designer transfer): nothing is sent until its devices are read again.
+ *    - Debug logging turns itself off 30 minutes after a bridge is created.
+ *    - Many fixes to connection drops, held commands, button gestures and pairing found in review.
  *  ## [1.0.0] - 2026-11-10
  *    - First release.
  *
@@ -127,11 +77,12 @@ import groovy.transform.Field
 import hubitat.helper.HexUtils
 import java.util.concurrent.ConcurrentHashMap
 
-@Field static final String VERSION = "1.0.1"
+@Field static final String VERSION = "1.0.2"
 @Field static final String DRIVER  = "Lutron LEAP Bridge (User)"
 
 @Field static final Integer PAIRING_PORT = 8083
 @Field static final Integer LEAP_PORT = 8081
+@Field static final Integer ANSWERED_KEPT = 20         // answered requests remembered by tag, for a second answer
 @Field static final Integer REPLY_SECS = 10            // a request with no answer by then has failed
 @Field static final Integer BUTTON_SECS = 180          // time to press the bridge button (pylutron-caseta)
 @Field static final Integer PROVISIONAL_TRIES = 3       // connects new credentials get before they're dropped
@@ -142,7 +93,7 @@ import java.util.concurrent.ConcurrentHashMap
 @Field static final Integer KEEPALIVE_SECS = 20
 // How often the live link checks the bridge's devices for changes (seconds)
 @Field static final Integer CHANGE_CHECK_SECS = 600
-// The reconnect probe's (and Probe Host's) request timeout (seconds)
+// The reconnect probe's request timeout (seconds)
 @Field static final Integer PROBE_SECS = 5
 // Probe errors meaning nothing at the address is listening (lower case, matched anywhere in the message)
 @Field static final List<String> PROBE_DOWN = ["connect timed out", "no route to host", "unreachable", "connection refused"]
@@ -167,16 +118,15 @@ import java.util.concurrent.ConcurrentHashMap
 // Read too, but the device list doesn't wait on it: occupancy groups (one per room; those with sensors become motion
 // devices). A bridge that doesn't answer it gives its list without occupancy.
 @Field static final String OCCUPANCY_GROUPS_URL = "/occupancygroup"
+@Field static final String DEVICE_STATUS_URL = "/device/status"      // Caseta: every device's status, battery state included
+@Field static final String BATTERY_STATUS_URL = "/device/status/batterystatus"   // a processor: the devices with a battery
 // /project ProductTypes of a processor (pylutron-caseta's PROCESSOR_PRODUCT_TYPES)
 @Field static final List<String> PROCESSOR_TYPES = ["Lutron RadioRA 3 Project", "Lutron HWQS Project", "Lutron Athena Project"]
 // A zone status within this long of our own command for that zone is "digital"
 @Field static final Long DIGITAL_MS = 3000L
-// Logging a whole 33 KB line took ~8 s on the hub and held up this single-threaded driver: long answers are logged
-// in parts of this many characters, and only when asked for (Read URL)
-@Field static final Integer LOG_PART = 2000
 
 // Socket session in progress, keyed by device id. kind pair|leap; phase hello|up; pending: [tag: request];
-// queue: reads and subscriptions waiting; reading: the tag of the read in flight; subs: [tag: url] for Subscribe URL.
+// queue: reads and subscriptions waiting; reading: the tag of the read in flight.
 @Field static ConcurrentHashMap<Long, Map> sessions = new ConcurrentHashMap<>()
 // Received text not yet ending in a newline, keyed by device id
 @Field static ConcurrentHashMap<Long, String> rxBuf = new ConcurrentHashMap<>()
@@ -187,7 +137,6 @@ import java.util.concurrent.ConcurrentHashMap
 // when it is up (HOLD_SECS at most). In memory: a press after a code save is held, one before it went with the session.
 @Field static ConcurrentHashMap<Long, List> heldCommands = new ConcurrentHashMap<>()
 @Field static final Integer HOLD_SECS = 10
-@Field static final Integer AGAIN_MS = 5_000             // a Double Tap's second press waits this long for the first's Release
 // When we last sent a command to each zone, keyed by device id: [zoneId (String): ms]
 @Field static ConcurrentHashMap<Long, Map> zoneCommands = new ConcurrentHashMap<>()
 // Pico button timing, keyed by device id: [buttonId (String): [seq:, down:, held:, second:, tapUntil:]]
@@ -195,6 +144,9 @@ import java.util.concurrent.ConcurrentHashMap
 // Zones flashing, keyed by device id: [zoneId (String): [run:, rate:, next: 0|100, seq:, sentAt:, name:, limit:, until:,
 // restore:]]. run: this flash's id; its timers and step answers carry it, so one left over from a flash that was
 // stopped can't drive the next.
+// A flashing zone is frozen (zoneFrozen): no status for it reaches its device from the start of the flash until what
+// ended it is answered and the zone has been read once, so the device keeps the switch and level it had and nothing
+// has to tell a step's report from a real change.
 // Cleared with the session: a driver code save or a lost connection ends every flash.
 @Field static ConcurrentHashMap<Long, Map> flashes = new ConcurrentHashMap<>()
 @Field static final Integer FLASH_MIN_MS = 500
@@ -202,11 +154,17 @@ import java.util.concurrent.ConcurrentHashMap
 @Field static final Integer FLASH_RESUME_SECS = 60           // a flash cut short by a drop is undone if the link is back by then
 @Field static final Integer FLASH_LIMIT_SECS = 60            // a flash ends after this long unless the dimmer says otherwise
 @Field static final Integer FLASH_LIMIT_MAX_SECS = 3600
-// A flash's on step reports 100% 50-110 ms after it is sent: a flash stopped in that gap gets the report after it ended,
-// which would give the device 100% for a level it never chose. Zones whose last step (to 100) hadn't reported when the
-// flash stopped, keyed by device id: [zoneId (String): until ms]; the first 100% report by then is the step's, dropped.
-@Field static ConcurrentHashMap<Long, Map> flashTails = new ConcurrentHashMap<>()
-@Field static final Long FLASH_TAIL_MS = 2000L
+// A flash's end is settled when the command that ended it is answered (or given up) and the zone read once; until
+// then the zone stays frozen. The limit runs from the command, and again from the read when it goes out: longer than
+// either can take (a read is tried twice, REPLY_SECS each), so the answer always finds its settle
+@Field static final Long SETTLE_MS = 25_000L
+// For this long after that read a report for the zone isn't taken at its word (it may be a flash step's, late): the
+// zone is read again instead
+@Field static final Long SETTLED_MS = 2_000L
+// A read stands for the zone only if nothing was reported for it while the read was out, and only if it was answered.
+// Passed by a report, it is made again (each such read answers a report, so reports set the pace); not answered, it
+// is made again up to this many times
+@Field static final Integer VERIFY_TRIES = 4
 // The bridge reports our own press's Press 60-110 ms after the request
 @Field static final Long PRESS_DIGITAL_MS = 2000L
 @Field static final Integer HOLD_MS = 1000             // quick presses take up to ~440 ms, holds ~3 s
@@ -234,9 +192,6 @@ metadata {
         command "setZoneLevel", [[name: "Zone ID*", type: "NUMBER", description: "The number in the zone href (/zone/3 -> 3)"],
                                  [name: "Level*", type: "NUMBER", description: "0-100"],
                                  [name: "Fade seconds", type: "NUMBER", description: "Empty: GoToLevel; a number: GoToDimmedLevel"]]
-        command "readUrl", [[name: "URL*", type: "STRING", description: "LEAP URL, e.g. /device, /zone/3/status, /server"]]
-        command "subscribeUrl", [[name: "URL*", type: "STRING", description: "e.g. /button/101/status/event"]]
-        command "probeHost", [[name: "IP address*", type: "STRING"], [name: "Port", type: "NUMBER", description: "Default 8081"]]
     }
     preferences {
         input name: "logLevel", type: "enum", title: fmtTitle("Logging Level"),
@@ -401,8 +356,7 @@ void pairLine(Map s, Map j, String line) {
             pairingFailed("no certificate in the reply: ${leapSummary(j)}", s.appAttempt)
             return
         }
-        endSession()
-        sendEventLog(name: "connection", value: "disconnected")
+        closeSession()
         Boolean kept = false
         try {
             // On a processor the LEAP connection is checked against the Lutron root (pylutron-caseta keeps it as
@@ -436,8 +390,7 @@ void pairTimeout() {
 void pairingFailed(String why, Object attempt = null) {
     logWarn "Pairing failed: ${why}"
     Object appAttempt = attempt ?: sessions[device.idAsLong]?.appAttempt
-    endSession()
-    sendEventLog(name: "connection", value: "disconnected")
+    closeSession()
     try { parent?.pairingFailed(why, appAttempt?.toString()) } catch (Exception e) { logErr "Couldn't tell the app: ${e.message}" }
     resumeAfterPairing()
 }
@@ -447,8 +400,7 @@ void cancelPairing(String appAttempt = null) {
     Map ps = sessions[device.idAsLong]
     if (ps?.kind != "pair") return
     if (appAttempt != null && ps.appAttempt?.toString() != appAttempt) return
-    endSession()
-    sendEventLog(name: "connection", value: "disconnected")
+    closeSession()
     logInfo "Pairing cancelled"
     resumeAfterPairing()
 }
@@ -460,8 +412,7 @@ void resumeAfterPairing() {
     try { paired = parent?.credentialsPresent() == true } catch (Exception e) { logDebug "Couldn't ask the app for its pairing: ${e.message}" }
     if (!paired) return
     logInfo "Pairing ended without a new certificate: connecting with the pairing kept"
-    linkOf().attempt = 0
-    runIn(1, "connect")
+    connectAnew()
 }
 
 // From the app: the new credentials' trial ended (cancelled or out of time). Any link using them closes, and the next
@@ -482,8 +433,14 @@ void connectSoon() {
     runIn(1, "connect")
 }
 
+// The same, as a first attempt (no back-off carried over)
+void connectAnew() {
+    linkOf().attempt = 0
+    runIn(1, "connect")
+}
+
 /*******************************************************************
- ***** Commands on the bridge device: scenes, raw LEAP tools, diagnostics
+ ***** Commands on the bridge device: scenes, Set Zone Level
 ********************************************************************/
 // Pings the bridge on the open session (connecting first if needed) and logs the round trip.
 void ping() {
@@ -501,9 +458,7 @@ void ping() {
 // Closes the session and stays disconnected until Initialize, a Ping, a command or the app connects again.
 void disconnect() {
     checkDriverVersion()
-    stopLink("Disconnect")
-    sendEventLog(name: "connection", value: "disconnected")
-    setHealth("offline")
+    stopForGood("Disconnect")
     logInfo "Disconnected (no reconnect until Initialize, Ping, a command or the app connects)"
 }
 
@@ -550,60 +505,7 @@ void setZoneLevel(Object zoneId, Object level, Object fadeSecs = null) {
     BigDecimal fade = decOrNull(fadeSecs)
     Map cmd = (fade == null) ? goToLevel(lvl) :
               [CommandType: "GoToDimmedLevel", DimmedLevelParameters: [Level: lvl, FadeTime: leapDuration(fade)]]
-    Integer at = stopFlash(z, "Set Zone Level")
-    zoneCommand(z, cmd, true, readAfter(z, at, lvl))
-}
-
-// Probe Host (diagnostic): an async HTTPS request to the address, with the answer and its time logged at Info. Shows
-// what a live and a dead host answer, without the risk of a blocking rawSocket.connect, which stalls every raw socket
-// on the hub while it waits on a host that drops packets.
-void probeHost(String ip, Object port = null) {
-    String h = ip?.trim()
-    if (!h) { logWarn "Probe Host: an IP address is needed"; return }
-    Integer p = intOrNull(port) ?: LEAP_PORT
-    logInfo "Probe Host: ${h}:${p}..."
-    asynchttpGet("probeAnswer", [uri: "https://${h}:${p}/".toString(), timeout: PROBE_SECS, ignoreSSLIssues: true],
-                 [ip: h, port: p, at: now()])
-}
-
-void probeAnswer(Object resp, Map data) {
-    long ms = now() - ((data?.at ?: now()) as Long)
-    String err = null
-    Object st = null
-    try { st = resp?.status } catch (Exception e) { st = "?" }
-    try { if (resp?.hasError()) err = resp.getErrorMessage() } catch (Exception e) { err = "(${e.message})" }
-    logInfo "Probe Host ${data?.ip}:${data?.port}: status ${st}, ${err ? "error ${err}" : 'no error'}, after ${ms} ms"
-}
-
-void readUrl(String url) {
-    checkDriverVersion()
-    if (!url?.trim()?.startsWith("/")) { logWarn "Read URL: a LEAP URL starts with '/' (got '${url}')"; return }
-    queueRead("ReadRequest", url.trim(), "rawAnswer", [raw: true])
-}
-
-void subscribeUrl(String url) {
-    checkDriverVersion()
-    if (!url?.trim()?.startsWith("/")) { logWarn "Subscribe URL: a LEAP URL starts with '/' (got '${url}')"; return }
-    queueRead("SubscribeRequest", url.trim(), "rawSubscribed", [raw: true])
-}
-
-// Raw tools: whole answers and events at Info, in parts (asked for, so worth the cost)
-void rawAnswer(Map s, Map j, Map p, String line) {
-    if (line != null) logLong("Read ${p.url}: ${j?.Header?.StatusCode ?: 'failed'}", line)
-}
-
-void rawSubscribed(Map s, Map j, Map p, String line) {
-    if (j == null) return
-    s.subs[p.tag] = p.url
-    logInfo "Subscribed to ${p.url}: its events are logged at Info until the connection ends"
-}
-
-void logLong(String title, String text) {
-    if (text.length() <= LOG_PART) { logInfo "${title}: ${text}"; return }
-    int parts = (int) Math.ceil(text.length() / (double) LOG_PART)
-    for (int i = 0; i < parts; i++) {
-        logInfo "${title} (part ${i + 1}/${parts}): ${text.substring(i * LOG_PART, Math.min(text.length(), (i + 1) * LOG_PART))}"
-    }
+    zoneCommand(z, cmd, true, flashEndedBy(z, "Set Zone Level"))
 }
 
 /*******************************************************************
@@ -652,6 +554,7 @@ void childrenAdded(List dnis) {
     List<Integer> ledIds = ((Map) state.leds ?: [:]).findAll { k, v -> intOrNull(v.d) in picoIds }.collect { k, v -> k as Integer }.sort()
     newSubs(s, "subLeds", ledIds).each { enqueue(s, subItem(s, "led", it)) }
     if (zones) enqueue(s, [type: "ReadRequest", url: "/zone/status", then: "zoneStatusAnswer"])
+    if (picoIds) queueBatteryRead(s)
     if (all.any { it.startsWith(prefix + "a/") }) {
         if (s.areaSub) enqueue(s, [type: "ReadRequest", url: occupancyUrl(), then: "areaStatusAnswer"])
         else queueAreaSub(s)                                     // the first occupancy device: its answer has every area
@@ -668,54 +571,38 @@ void childrenHealth(String value) {
 /*******************************************************************
  ***** Zones: <bridge DNI>/z/<zoneId>; commands up, status down
 ********************************************************************/
-// Any command to a zone stops its flash first
-void componentOn(Object cd)  { Integer z = zoneOf(cd); if (z != null) { Integer at = stopFlash(z, "On"); zoneLevel(z, 100, null, readAfter(z, at, 100)) } }
+// Any command to a zone ends its flash first. The zone then stays frozen until that command is answered and the zone
+// read (flashEndedBy gives the command what it needs for that): the read shows where the command left the light.
+void componentOn(Object cd)  { Integer z = zoneOf(cd); if (z != null) zoneLevel(z, 100, null, flashEndedBy(z, "On")) }
 
-void componentOff(Object cd) { Integer z = zoneOf(cd); if (z != null) { Integer at = stopFlash(z, "Off"); zoneLevel(z, 0, null, readAfter(z, at, 0)) } }
-
-// While a zone flashes its device shows on and the steps' reports don't reach it, so the device learns its state from
-// the report of the command that stops the flash. A command that leaves the zone where the flash left it (Off at an off
-// step, Stop; target null: Stop or Raise/Lower, whose level isn't known) may bring no report: the zone is read once the
-// command is answered (a command that changes the level reports it, and a read sooner could catch a fade midway).
-// at: stopFlash's answer, the level the flash left the zone at (null: no flash was running).
-Map readAfter(Integer z, Integer at, Integer target) {
-    if (at == null) return null
-    if (target != null && zoneControl(z) == "Switched") target = target > 0 ? 100 : 0
-    return (target == null || target == at) ? [readAfter: z] : null
-}
-
-// As readAfter, for a level change asked of a switch: nothing is sent, so the zone is read at once
-void readNow(Integer z, Integer at) {
-    if (at != null) queueRead("ReadRequest", "/zone/${z}/status".toString(), "zoneStatusAnswer")
-}
+void componentOff(Object cd) { Integer z = zoneOf(cd); if (z != null) zoneLevel(z, 0, null, flashEndedBy(z, "Off")) }
 
 void componentSetLevel(Object cd, Object level, Object secs = null) {
     Integer z = zoneOf(cd)
     Integer lvl = intOrNull(level)
     if (z == null) return
     if (lvl == null) { logWarn "${cd.displayName}: set level ${level}?"; return }
-    Integer at = stopFlash(z, "Set Level")
-    zoneLevel(z, lvl, secs, readAfter(z, at, Math.max(0, Math.min(100, lvl))))
+    zoneLevel(z, lvl, secs, flashEndedBy(z, "Set Level"))
 }
 
 void componentStartLevelChange(Object cd, Object direction) {
     Integer z = zoneOf(cd)
     if (z == null) return
-    Integer at = stopFlash(z, "Start Level Change")
+    Map ended = flashEndedBy(z, "Start Level Change")
     if (zoneControl(z) == "Switched") {
         logDebug "${cd.displayName}: a switch has no level change"
-        readNow(z, at)
+        if (ended) settleRead(ended.settle, ended.sid)   // nothing is sent: the zone is read at once
         return
     }
-    zoneCommand(z, [CommandType: direction?.toString() == "up" ? "Raise" : "Lower"], false, readAfter(z, at, null))
+    zoneCommand(z, [CommandType: direction?.toString() == "up" ? "Raise" : "Lower"], false, ended)
 }
 
 void componentStopLevelChange(Object cd) {
     Integer z = zoneOf(cd)
     if (z == null) return
-    Integer at = stopFlash(z, "Stop Level Change")
-    if (zoneControl(z) == "Switched") { readNow(z, at); return }
-    zoneCommand(z, [CommandType: "Stop"], false, readAfter(z, at, null))
+    Map ended = flashEndedBy(z, "Stop Level Change")
+    if (zoneControl(z) == "Switched") { if (ended) settleRead(ended.settle, ended.sid); return }
+    zoneCommand(z, [CommandType: "Stop"], false, ended)
 }
 
 void componentRefresh(Object cd) {
@@ -757,10 +644,9 @@ void zoneCommand(Integer z, Map cmd, boolean raw = false, Map ctx = null) {
                   (cmd.DimmedLevelParameters ? " ${cmd.DimmedLevelParameters.Level} over ${cmd.DimmedLevelParameters.FadeTime}" : "")
     Map c = raw ? [raw: true] : null
     if (ctx) c = (c ?: [:]) + ctx
-    // Told to go to 100: a stopped flash's late 100% step report is then true too, so it isn't dropped
-    Object target = cmd.Parameter ? cmd.Parameter[0].Value : cmd.DimmedLevelParameters?.Level
-    if (ctx?.flash == null && intOrNull(target) == 100) flashTails[device.idAsLong]?.remove(z.toString())
     if (command("/zone/${z}/commandprocessor".toString(), [Command: cmd], what, c)) markZoneCommand(z)
+    // not sent: no answer will come to settle a flash it ended, so the zone isn't kept frozen for it
+    else if (ctx?.settle != null) ((Map) sessions[device.idAsLong]?.settles)?.remove(z.toString())
 }
 
 // A command to this zone just went out: its status within DIGITAL_MS is ours (digital)
@@ -770,39 +656,39 @@ void markZoneCommand(Object z) {
     zc[z.toString()] = now()
 }
 
-// A zone status (a push, or an answer to a read): switch and level to the zone's child.
-void zoneStatus(Map st) {
+// A zone status (a push, or an answer to a read): switch and level to the zone's child. force: the read that settles
+// a flash's end, which is applied to a frozen zone.
+void zoneStatus(Map st, boolean force = false) {
     Integer z = intOrNull(st?.Zone?.href?.toString()?.tokenize("/")?.getAt(1))
     Integer lvl = intOrNull(st?.Level)
     if (z == null || lvl == null) return
     // While the routing is blocked a zone number may name another load: no status reaches a device, whether pushed or
     // the answer to a read (the refresh after the re-read gives the real one)
     if (state.routingStale) { logDebug "Zone ${z}: level ${lvl} (not applied while the processor's devices are read again)"; return }
-    // A zone with a flash undo due: the resync's level says whether the light is still where the flash left it
-    Map s0 = sessions[device.idAsLong]
-    if (s0 != null && !s0.resynced && ((Map) state.flashResume)?.containsKey(z.toString())) {
-        if (s0.seenLevels == null) s0.seenLevels = [:]
-        s0.seenLevels[z.toString()] = lvl
+    if (!force && zoneFrozen(z.toString())) {
+        // reported while the settling read is out: that read may be older than this, so the zone is read once more
+        Map se = (Map) ((Map) sessions[device.idAsLong]?.settles)?.get(z.toString())
+        if (se?.reading) se.dirty = true
+        logDebug "Zone ${z}: level ${lvl} (flashing, or a flash's end not settled yet: not applied)"
+        return
     }
-    // The late report of the last step of a flash that has stopped (the device keeps the level it had)
-    Map tails = flashTails[device.idAsLong]
-    Object tailUntil = tails?.remove(z.toString())
-    if (tailUntil != null && lvl == 100 && now() <= (tailUntil as Long)) { logDebug "Zone ${z}: 100% (a stopped flash's last step; not applied)"; return }
+    // Just settled: a report now may be a step's, late, or a real change. A read tells which, so nothing has to guess.
+    // While that read is out the zone stays as it is, whatever the time, and a further report means reading again.
+    Map settled = (Map) sessions[device.idAsLong]?.settled
+    Map sv = (Map) settled?.get(z.toString())
+    if (!force && sv != null) {
+        if (now() > (sv.until as Long) && !sv.reading) settled.remove(z.toString())
+        else {
+            logDebug "Zone ${z}: level ${lvl} (just after a flash: read again, not applied)"
+            if (sv.reading) sv.dirty = true else verifyRead(sv, z)
+            return
+        }
+    }
     Object child = childOf("${device.deviceNetworkId}/z/${z}".toString())
     if (child == null) { logDebug "Zone ${z}: level ${lvl} (no device)"; return }
     Map sSeen = sessions[device.idAsLong]
     if (sSeen != null) { if (sSeen.zonesSeen == null) sSeen.zonesSeen = [] as Set; sSeen.zonesSeen << z.toString() }   // its device has a current state
     String name = child.displayName
-    // A flashing zone shows on for the whole flash: its steps' reports don't reach the device. The report of whatever
-    // ends the flash (the time limit's restore, or the command that stopped it) gives the real state.
-    Map fl = (Map) flashes[device.idAsLong]?.get(z.toString())
-    if (fl != null) {
-        if (fl.lastStep != null && lvl == (fl.lastStep as Integer)) fl.stepSeen = true      // the last step has reported
-        if (child.currentValue("switch")?.toString() != "on")
-            child.parse([[name: "switch", value: "on", type: "digital", descriptionText: "${name} switch is on (flashing)".toString()]])
-        logDebug "Zone ${z}: level ${lvl} (a flash step)"
-        return
-    }
     Long at = (Long) zoneCommands[device.idAsLong]?.get(z.toString())
     String type = (at != null && now() - at <= DIGITAL_MS) ? "digital" : "physical"
     String sw = lvl > 0 ? "on" : "off"
@@ -811,6 +697,96 @@ void zoneStatus(Map st) {
     // Off keeps the last level (the dimmer's On can go back to it)
     if (ctl != "Switched" && lvl > 0) evts << [name: "level", value: lvl, unit: "%", type: type, descriptionText: "${name} level is ${lvl}%".toString()]
     child.parse(evts)
+}
+
+// Frozen: flashing; or a flash ended by a command not yet answered and read (the session's settles); or a flash whose
+// undo is still due (state.flashResume: after a time limit or a failed step until the restore is answered, and across
+// a drop until the resync's restore). Each has its own deadline, so a zone can't stay frozen.
+boolean zoneFrozen(String z) {
+    if (flashes[device.idAsLong]?.containsKey(z)) return true
+    Map st = (Map) sessions[device.idAsLong]?.settles
+    Map e = (Map) st?.get(z)
+    if (e != null) {
+        if (now() <= (e.until as Long)) return true
+        st.remove(z)
+    }
+    Map r = (Map) ((Map) state.flashResume)?.get(z)
+    return r != null && now() <= ((r.until ?: 0L) as Long)
+}
+
+// A command to the zone: its flash, or an undo still due for one, ends here. Returns what the command carries so the
+// zone is read once it is answered (null: the zone wasn't frozen, so the command's own report is enough).
+Map flashEndedBy(Integer z, String why) {
+    boolean undoDue = ((Map) state.flashResume)?.containsKey(z.toString())
+    boolean flashing = stopFlash(z, why)                 // clears the undo too
+    Map s = sessions[device.idAsLong]
+    // still settling from an earlier command: this one takes the settle over, and the earlier read is passed by
+    boolean settling = ((Map) s?.settles)?.containsKey(z.toString())
+    if ((!flashing && !undoDue && !settling) || s == null) return null
+    return settleFor(s, z, UUID.randomUUID().toString())
+}
+
+// Keeps the zone frozen until the read named by sid is answered, or SETTLE_MS
+Map settleFor(Map s, Object z, String sid) {
+    if (s.settles == null) s.settles = [:]
+    s.settles[z.toString()] = [id: sid, until: now() + SETTLE_MS]
+    return [settle: intOrNull(z), sid: sid]
+}
+
+// The read that settles a flash's end: asked once the ending command is answered or given up
+void settleRead(Object z, Object sid) {
+    Map se = (Map) ((Map) sessions[device.idAsLong]?.settles)?.get(z.toString())
+    if (se != null && se.id?.toString() == sid?.toString()) { se.reading = true; se.until = now() + SETTLE_MS }
+    queueRead("ReadRequest", "/zone/${z}/status".toString(), "settledAnswer", [settle: z, sid: sid?.toString()])
+}
+
+// An undo still on record (its restore got no answer) is done when a read made after the flash shows the light where
+// the undo would put it: the record goes, so the zone is free and no resync sends that restore again. Whichever read
+// shows it: the settling one, or the check after it when that one failed.
+void undoShownDone(String z, Map zs) {
+    Map rec = (Map) ((Map) state.flashResume)?.get(z)
+    if (rec != null && intOrNull(zs.Level) == ((rec.level ?: 0) as Integer)) clearFlashResume(intOrNull(z), rec.rid)
+}
+
+// The read that checks the zone just after a flash's end was settled (sv: its entry in the session's settled)
+void verifyRead(Map sv, Object z) {
+    sv.reading = true
+    sv.dirty = false
+    settleRead(z, "verify")
+}
+
+void settledAnswer(Map s, Map j, Map p, String line) {
+    String z = p.ctx?.settle?.toString()
+    String sid = p.ctx?.sid?.toString()
+    Map st = (Map) s.settles
+    Map mine = (st != null && ((Map) st[z])?.id?.toString() == sid) ? (Map) st.remove(z) : null
+    // a newer flash, or a newer ending still to be read, has the zone now
+    if (flashMap().containsKey(z) || st?.containsKey(z)) { ((Map) s.settled)?.remove(z); return }
+    Map zs = (j?.Body?.ZoneStatus instanceof Map) ? (Map) j.Body.ZoneStatus : null
+    if (sid == "verify") {
+        Map sv = (Map) ((Map) s.settled)?.get(z)
+        if (sv == null) return
+        sv.reading = false
+        // something was reported while it was out: it isn't the zone's state now, and is never shown
+        if (sv.dirty) { verifyRead(sv, z); return }
+        if (zs == null) {
+            sv.tries = ((sv.tries ?: 0) as Integer) + 1
+            if ((sv.tries as Integer) < VERIFY_TRIES) { verifyRead(sv, z); return }
+            logWarn "Zone ${z}: its status couldn't be read after a flash; its device may not show where the light is until its next change"
+            ((Set) s.zonesSeen)?.remove(z)                 // so Flash, which starts from the device's state, waits for a status
+        }
+        if (zs != null) { zoneStatus(zs, true); undoShownDone(z, zs) }
+        if (zs == null || now() > (sv.until as Long)) ((Map) s.settled).remove(z)
+        return
+    }
+    // its settle is gone (it ran out, or the session's settles were cleared): what it read may be older than what
+    // the device has been shown since
+    if (mine == null) { logDebug "Zone ${z}: a settling read answered after its settle ended (not applied)"; return }
+    if (zs != null) { zoneStatus(zs, true); undoShownDone(z, zs) }
+    if (s.settled == null) s.settled = [:]
+    Map sv = [until: now() + SETTLED_MS, tries: 0]
+    s.settled[z] = sv
+    if (zs == null || mine?.dirty) verifyRead(sv, z)
 }
 
 void zoneStatusAnswer(Map s, Map j, Map p, String line) {
@@ -847,7 +823,12 @@ void componentFlash(Object cd, Object rateMs = null, Object limitSecs = null) {
         logWarn "${cd.displayName}: Flash not started: its status hasn't come in since the link came up; try again in a moment"
         return
     }
-    clearFlashResume(z)
+    // The restore is the device's switch and level, so the device must show the light: not while the last flash's end
+    // is unsettled, nor while a report after it is held for its check
+    if (zoneFrozen(z.toString()) || ((Map) ((Map) sessions[device.idAsLong]?.settled)?.get(z.toString()))?.reading) {
+        logWarn "${cd.displayName}: Flash not started: its last flash is still ending; try again in a moment"
+        return
+    }
     Object child = childOf("${device.deviceNetworkId}/z/${z}".toString())
     boolean on = child?.currentValue("switch")?.toString() == "on"
     Integer lvl = intOrNull(child?.currentValue("level"))
@@ -883,18 +864,15 @@ void flashTimeUp(Integer z) {
 }
 
 // Stops the flash and sends the zone back to how it was before it (on at its level, or off): after the time limit, and
-// after a step that failed, which may have left the zone at either end. Its answer's report gives the device its state.
+// after a step that failed, which may have left the zone at either end. The undo is kept until this restore is
+// answered, so a drop before then leaves it to the next resync; the zone stays frozen meanwhile.
 void endFlash(Integer z, String why, boolean warn) {
     Map e = (Map) flashMap()[z.toString()]
     if (e == null) return
     int back = (e.restore ?: 0) as Integer
-    // Where the steps may have left it, for the undo after a drop (as stopAllFlashes keeps), until the restore is answered
-    int last = ((e.next as Integer) == 0) ? 100 : 0
-    List<Integer> left = (((e.acked as Integer) == (e.seq as Integer)) ? [last] : [0, 100]) + [back]
     stopFlash(z, why, warn, back > 0 ? "; back on at ${back}%" : "; back off")
     String rid = UUID.randomUUID().toString()
-    state.flashResume = ((Map) state.flashResume ?: [:]) + [(z.toString()): [level: back, left: left, name: e.name,
-                                                                             until: now() + FLASH_RESUME_SECS * 1000L, rid: rid]]
+    state.flashResume = ((Map) state.flashResume ?: [:]) + [(z.toString()): [level: back, name: e.name, until: now() + FLASH_RESUME_SECS * 1000L, rid: rid]]
     zoneCommand(z, goToLevel(back), false, [restored: z, rid: rid])
 }
 
@@ -913,8 +891,6 @@ void flashStep(Integer z) {
     e.next = (lvl == 0) ? 100 : 0
     e.seq = (e.seq as Integer) + 1
     e.sentAt = now()
-    e.lastStep = lvl
-    e.stepSeen = false
     zoneCommand(z, goToLevel(lvl), false, [flash: z, run: e.run, seq: e.seq])
 }
 
@@ -923,7 +899,6 @@ void flashAnswered(Integer z, Object run, Integer seq, boolean ok, String status
     Map e = flashRun(z, run)
     if (e == null || (e.seq as Integer) != seq) return
     if (!ok) { endFlash(z, "the bridge answered ${status}", true); return }
-    e.acked = seq
     long wait = (e.sentAt as Long) + (e.rate as Integer) - now()
     if (wait <= 0) flashStep(z)
     else runInMillis(wait, "flashTimer", [data: [zone: z, run: run, seq: seq], overwrite: false])
@@ -941,22 +916,14 @@ void flashTimer(Map data) {
     flashStep(z)
 }
 
-// Ends the zone's flash, if there is one, and says why (a Warn when something went wrong). Returns the level the flash
-// left the zone at (its last step, or the level before it when no step went out), or null when no flash was running.
-Integer stopFlash(Integer z, String why, boolean warn = false, String after = "") {
+// Ends the zone's flash, if there is one, and says why (a Warn when something went wrong). True when one was running.
+boolean stopFlash(Integer z, String why, boolean warn = false, String after = "") {
     clearFlashResume(z)                                  // a command to the zone: an undo still due after a drop is dropped
     Map e = (Map) flashes[device.idAsLong]?.remove(z.toString())
-    if (e == null) return null
-    // its last step went to 100 and hasn't reported yet: that report, when it comes, isn't the zone's new level
-    if (e.lastStep == 100 && e.stepSeen != true && now() - ((e.sentAt ?: 0L) as Long) <= FLASH_TAIL_MS) {
-        Map tails = flashTails[device.idAsLong]
-        if (tails == null) { tails = new ConcurrentHashMap<String, Long>(); flashTails[device.idAsLong] = tails }
-        tails[z.toString()] = now() + FLASH_TAIL_MS
-    }
+    if (e == null) return false
     String m = "${e.name ?: 'Zone ' + z}: flash stopped (${why})${after ?: ''}"
     if (warn) logWarn m else logInfo m
-    Integer step = intOrNull(e.lastStep)                 // 0 is a step too: not ?:
-    return step != null ? step : ((intOrNull(e.restore) ?: 0) as Integer)
+    return true
 }
 
 // The session ended: every flash stops where its last step left the light (0 or 100). When the link ended by itself
@@ -971,44 +938,38 @@ void stopAllFlashes(String why) {
         Map e = (Map) f[k]
         int lvl = (e?.restore ?: 0) as Integer
         String was = lvl > 0 ? "${lvl}%" : "off"
-        // Where the steps left it: the last one, if its answer came; else the last or the one before
-        int last = ((e?.next as Integer) == 0) ? 100 : 0
-        List<Integer> left = ((e?.acked as Integer) == (e?.seq as Integer)) ? [last] : [0, 100]
         stopFlash(intOrNull(k), why, true, back ? "; the light may be left at a step: it goes back to ${was} if the link is back within ${FLASH_RESUME_SECS} s"
                                                 : "; the light may be left at a step (before the flash: ${was})")
-        if (back) resume[k] = [level: lvl, left: left, name: e?.name, until: now() + FLASH_RESUME_SECS * 1000L, rid: UUID.randomUUID().toString()]
+        if (back) resume[k] = [level: lvl, name: e?.name, until: now() + FLASH_RESUME_SECS * 1000L, rid: UUID.randomUUID().toString()]
     }
     if (resume) state.flashResume = ((Map) state.flashResume ?: [:]) + resume
 }
 
-// After a resync: the flashes a drop cut short go back to how they were (stopAllFlashes), only where the resync found
-// the light still where the flash left it: a change at the wall or in the Lutron app meanwhile isn't undone, and a zone
-// the resync gave no level for is left alone
-// Each record stays until its own restore is answered (another drop before then: the next resync tries again), a command
-// to the zone clears it, or it expires. A restore's answer comes in a later execution, so the records kept here are
-// written back whole.
+// After a resync: each flash whose undo is still due (cut short by a drop, or its restore never answered) goes back to
+// how it was before it. The zone has been frozen since the flash began, so the resync's level for it didn't reach the
+// device. Each record stays until its own restore is answered (another drop before then: the next resync tries
+// again), a command to the zone clears it, or it expires. A restore's answer comes in a later execution, so the
+// records kept here are written back whole.
 void resumeFlashes(Map s) {
     Map r = (Map) state.flashResume
     if (!r) return
     Map keep = [:]
     r.each { String k, Object v ->
         Map m = (Map) v
-        if (now() > (m.until as Long)) return
-        // a write failed and the link dropped: the rest wait for the next resync, which reads their levels first
-        if (!sessions[device.idAsLong].is(s)) { keep[k] = m; return }
-        Integer z = intOrNull(k)
-        int lvl = (m.level ?: 0) as Integer
-        Integer now = intOrNull(((Map) s?.seenLevels)?.get(k))
-        List left = ((List) m.left ?: [0, 100]).collect { it as Integer }
-        if (now == null || !(now in left)) {
-            logInfo "${m.name ?: 'Zone ' + k}: the flash the connection cut short is not undone (${now == null ? 'no level read' : 'now at ' + now + '%'})"
+        if (now() > (m.until as Long)) {
+            logInfo "${m.name ?: 'Zone ' + k}: the flash the connection cut short is not undone (the link was away too long)"
+            // its level wasn't applied if the resync read it before the record ran out
+            if (sessions[device.idAsLong].is(s)) queueRead("ReadRequest", "/zone/${k}/status".toString(), "zoneStatusAnswer")
             return
         }
+        // a write failed and the link dropped: the rest wait for the next resync
+        if (!sessions[device.idAsLong].is(s)) { keep[k] = m; return }
+        int lvl = (m.level ?: 0) as Integer
         logInfo "${m.name ?: 'Zone ' + k}: back to ${lvl > 0 ? lvl + '%' : 'off'}, as before the flash the connection cut short"
         String rid = m.rid?.toString() ?: UUID.randomUUID().toString()
-        keep[k] = m + [rid: rid, left: (left + [lvl]).unique()]          // the restore may land before a drop
+        keep[k] = m + [rid: rid]
         state.flashResume = keep                                         // before the write: a failed write drops the link
-        zoneCommand(z, goToLevel(lvl), false, [restored: z, rid: rid])
+        zoneCommand(intOrNull(k), goToLevel(lvl), false, [restored: intOrNull(k), rid: rid])
     }
     if (keep) state.flashResume = keep else state.remove("flashResume")
 }
@@ -1025,73 +986,34 @@ void clearFlashResume(Integer z, Object rid = null) {
 /*******************************************************************
  ***** Buttons and LEDs: Picos and keypads, <bridge DNI>/d/<deviceId>
 ********************************************************************/
-// A Pico child's Push (times 1) or Double Tap (2) presses the button on the bridge, which reports
-// the press like a real one (buttonEvent makes the events). A second press waits for the first one's Release,
-// so the two can't interleave.
+// A Pico child's Push (times 1) or Double Tap (2) presses the button on the bridge, which reports each press like a
+// real one (buttonEvent makes the events). A Double Tap is two presses sent together: the system does presses of one
+// button one after the other, never interleaved, and the Pico's Double-tap window makes one doubleTapped of them, as
+// of two quick presses by hand.
 void componentPush(Object cd, Object n, Object times = 1) {
     Integer b = intOrNull(n)
     Object bid = buttonKey((Map) state.buttons, lutronDeviceOf(cd), b)
     if (bid == null) { logWarn "${cd?.displayName}: button ${n} isn't one of this bridge's Pico buttons; not pressed"; return }
     String desc = "${cd.displayName} button ${b}".toString()
     if (routingBlocked(desc)) return                     // before a press is held as a raw button id
-    Map st = buttonState(bid)
-    boolean twice = intOrNull(times) == 2
-    // One Double Tap per button at a time: its second press waits on the first one's Release, kept in one flag
-    if (twice && doubleTapPending(bid)) { logWarn "${desc}: a Double Tap on it is already under way; this one is dropped"; return }
+    int presses = (intOrNull(times) == 2) ? 2 : 1
     Map s0 = sessions[device.idAsLong]
-    // Each Double Tap has its own id: a late refusal or timeout of an earlier one can't clear this one's second press
-    Map ctx = twice ? [again: true, gid: UUID.randomUUID().toString()] : null
     // Identity checked, but the resync hasn't subscribed the buttons yet: held, and sent with the other held presses
-    // once it has (sendHeldPresses), so its reports come back and a Double Tap keeps its second press
-    if (s0?.kind == "leap" && s0.phase == "up" && s0.verified && !s0.pressesSent) {
-        holdCommand(s0, [url: "/button/${bid}/commandprocessor".toString(), body: [Command: [CommandType: "PressAndRelease"]], desc: desc,
-                         ctx: ctx, type: "CreateRequest"])
-        return
+    // once it has (sendHeldPresses), so its reports come back
+    boolean beforeSubs = s0?.kind == "leap" && s0.phase == "up" && s0.verified && !s0.pressesSent
+    Long at = now()                                      // held presses share one deadline: they expire together
+    for (int i = 0; i < presses; i++) {
+        // the link ended while the first press was sent: the second doesn't go alone later, as a lone push
+        Map s1 = sessions[device.idAsLong]
+        if (i > 0 && (s1 == null ? s0 != null : !s1.is(s0))) return
+        if (beforeSubs) holdCommand(s0, [url: "/button/${bid}/commandprocessor".toString(), body: [Command: [CommandType: "PressAndRelease"]],
+                                         desc: desc, ctx: null, type: "CreateRequest", at: at])
+        else pressButton(bid, desc, at)
     }
-    if (twice && s0?.pressesSent && !buttonSubscribedNow(s0, bid)) {
-        logWarn "${desc}: Double Tap not sent (its button isn't subscribed on this connection, so the first press's Release wouldn't come back)"
-        return
-    }
-    // A Double Tap held for the link carries its second press (ctx.again), so the replay keeps the whole gesture
-    if (pressButton(bid, desc, ctx) && twice) armAgain(st, desc, ctx.gid)
 }
 
-// A Double Tap's second press, due on the first one's Release; it lapses after AGAIN_MS (no Release came)
-void armAgain(Map st, Object desc, Object gid) {
-    st.again = true; st.againDesc = desc?.toString(); st.againUntil = now() + AGAIN_MS; st.againId = gid?.toString()
-}
-
-// The second press, if one is due and still fresh; cleared either way
-boolean takeAgain(Map st) {
-    boolean due = st.again == true && now() <= ((st.againUntil ?: 0L) as Long)
-    st.remove("again"); st.remove("againUntil"); st.remove("againId")
-    return due
-}
-
-// Clears the button's pending second press; with gid, only if it is that Double Tap's
-void clearAgain(Object bid, Object gid = null) {
-    Map st = buttonState(bid)
-    if (gid != null && st.againId?.toString() != gid.toString()) return
-    st.remove("again"); st.remove("againUntil"); st.remove("againId")
-}
-
-// A Double Tap on this button waiting for its second press, or held for the link
-boolean doubleTapPending(Object bid) {
-    Map st = buttonState(bid)
-    if (st.again && now() > ((st.againUntil ?: 0L) as Long)) clearAgain(bid)        // its Release never came
-    if (st.again) return true
-    String url = "/button/${bid}/commandprocessor".toString()
-    return ((List) heldCommands[device.idAsLong] ?: []).any { it.url?.toString() == url && it.ctx?.again }
-}
-
-// The button's events subscription was answered on this connection
-boolean buttonSubscribedNow(Map s, Object bid) {
-    Integer id = intOrNull(bid)
-    return id != null && ((List) s?.subAcked ?: []).any { intOrNull(it) == id }
-}
-
-boolean pressButton(Object bid, String desc, Map ctx = null) {
-    if (!command("/button/${bid}/commandprocessor".toString(), [Command: [CommandType: "PressAndRelease"]], desc, ctx)) return false
+boolean pressButton(Object bid, String desc, Long heldFrom = null) {
+    if (!command("/button/${bid}/commandprocessor".toString(), [Command: [CommandType: "PressAndRelease"]], desc, null, "CreateRequest", heldFrom)) return false
     buttonState(bid).sentAt = now()
     return true
 }
@@ -1116,11 +1038,13 @@ Object buttonKey(Map table, String dev, Integer n) {
 // hasn't subscribed yet (the resync: all; a later re-read: only the new ones). A button nobody subscribed to sends
 // this connection nothing.
 void queueButtonSubs(Map s) {
-    Map btns = state.buttons ?: [:]
+    s.queue.addAll(0, newSubs(s, "subButtons", addedIds((Map) state.buttons)).collect { subItem(s, "button", it) })
+}
+
+// The ids in a button or LED map whose Pico or keypad the app has added, in order
+List<Integer> addedIds(Map map) {
     Set<String> have = childList().collect { it.deviceNetworkId.toString() } as Set
-    List<Integer> ids = btns.findAll { k, v -> "${device.deviceNetworkId}/d/${v.d}".toString() in have }.collect { k, v -> k as Integer }.sort()
-    ids = newSubs(s, "subButtons", ids)
-    s.queue.addAll(0, ids.collect { subItem(s, "button", it) })
+    return (map ?: [:]).findAll { k, v -> "${device.deviceNetworkId}/d/${v.d}".toString() in have }.collect { k, v -> k as Integer }.sort()
 }
 
 // A button or LED subscription. One that failed before on this connection is retried quietly: its first failure Warned.
@@ -1148,18 +1072,12 @@ List<Integer> newSubs(Map s, String key, List<Integer> ids) {
 }
 
 void buttonSubscribed(Map s, Map j, Map p, String line) {
-    if (j == null) { subFailed(s, "subButtons", p?.url?.toString()); return }
-    Integer id = intOrNull(p?.url?.toString()?.tokenize("/")?.getAt(1))
-    if (id != null) s.subAcked = ((List) (s.subAcked ?: [])) + id      // answered: its Press and Release reports will come
+    if (j == null) subFailed(s, "subButtons", p?.url?.toString())
 }
 
 // The LEDs of every added keypad, at the front of the queue (after its buttons)
 void queueLedSubs(Map s) {
-    Map leds = state.leds ?: [:]
-    Set<String> have = childList().collect { it.deviceNetworkId.toString() } as Set
-    List<Integer> ids = leds.findAll { k, v -> "${device.deviceNetworkId}/d/${v.d}".toString() in have }.collect { k, v -> k as Integer }.sort()
-    ids = newSubs(s, "subLeds", ids)
-    s.queue.addAll(0, ids.collect { subItem(s, "led", it) })
+    s.queue.addAll(0, newSubs(s, "subLeds", addedIds((Map) state.leds)).collect { subItem(s, "led", it) })
 }
 
 void ledSubscribed(Map s, Map j, Map p, String line) {
@@ -1238,7 +1156,6 @@ void buttonEvent(Map bs) {
             if (st.second) { st.second = false; buttonOut(child, n, "pushed", tapOf(st)) }   // the tap before this press
             buttonOut(child, n, "held", st)
         }
-        if (takeAgain(st)) pressButton(bid, st.againDesc?.toString())   // Double Tap's second press
         if (st.held) { buttonOut(child, n, "released", st); return }
         if (st.second) {
             buttonOut(child, n, "doubleTapped", st)
@@ -1269,7 +1186,6 @@ void fastButton(Object child, Integer n, Integer bid, String ev) {
         // a programmed RA3 keypad button reports Press only; one seen sending Release gets one at a drop too (kept
         // across reconnects; written once per button)
         if (!(bid.toString() in ((List) state.releaseButtons ?: []))) state.releaseButtons = ((List) state.releaseButtons ?: []) + bid.toString()
-        if (takeAgain(st)) pressButton(bid, st.againDesc?.toString())
         buttonOut(child, n, "released", st)
     } else {
         logDebug "Button ${bid}: ${ev} (not used)"
@@ -1345,13 +1261,51 @@ void buttonOut(Object child, Integer n, String name, Map st) {
 }
 
 /*******************************************************************
+ ***** Battery: a Pico's battery state, from the bridge's or processor's device status
+********************************************************************/
+// One read gives every battery state. A Caseta bridge answers /device/status with every device's status, a device's
+// BatteryStatus.LevelState being Good for a Pico whose battery is good and Unknown for a device with no battery. A
+// processor answers nothing there; its /device/status/batterystatus lists only the devices that have a battery. It is
+// read after each resync, with the change check and when a Pico is added. Nothing depends on it: a read that fails
+// leaves each Pico's value alone.
+void queueBatteryRead(Map s) {
+    String prefix = "${device.deviceNetworkId}/d/"
+    if (!childList().any { it.deviceNetworkId?.toString()?.startsWith(prefix) }) return
+    enqueue(s, [type: "ReadRequest", url: isProcessor() ? BATTERY_STATUS_URL : DEVICE_STATUS_URL, then: "batteryAnswer", ctx: [quiet: true]])
+}
+
+void batteryAnswer(Map s, Map j, Map p, String line) {
+    if (!sessions[device.idAsLong].is(s) || j == null) return
+    // The routing is blocked (the project changed): a device number may name another device until they are read again
+    if (state.routingStale) { logDebug "While the processor's devices are read again: the battery states aren't applied"; return }
+    List statuses = (List) (j.Body?.DeviceStatuses ?: j.Body?.DeviceBatteryStatusStatuses ?: [])
+    statuses.each { Map st ->
+        Object level = (st.BatteryStatus instanceof Map) ? st.BatteryStatus.LevelState : null
+        Object child = (level != null) ? buttonDevice(hrefId(st.Device?.href)) : null
+        // a Pico; a keypad's device has no battery state to show
+        if (child == null || state.buttons?.any { k, v -> v.kp && v.d?.toString() == hrefId(st.Device?.href)?.toString() }) return
+        String v = batteryValue(level.toString())
+        if (child.currentValue("batteryStatus")?.toString() == v) return
+        child.parse([[name: "batteryStatus", value: v, descriptionText: "${child.displayName} battery is ${v}".toString()]])
+    }
+}
+
+// Any state other than Good or Unknown is a battery to change: an unexpected value must not read as good or be hidden
+String batteryValue(String level) { level == "Good" ? "good" : (level == "Unknown" ? "unknown" : "low") }
+
+/*******************************************************************
  ***** Discovery: Caseta, six reads, one compact list for the app
 ********************************************************************/
 // haveProject: the resync has just read /project and /device, so they aren't read twice. front: ahead of what is queued
 // (the resync's discovery comes before the button subscriptions, which use its map)
 void queueDiscovery(Map s, boolean haveProject = false, boolean front = false) {
     // One discovery at a time per session: its answers go into s.disc, so a second one would empty it mid-read
-    if (s.disc != null) { logInfo "Discover: already reading the devices; that read gives the new list"; return }
+    if (s.disc != null) {
+        logInfo "Discover: already reading the devices; that read gives the new list"
+        s.disc.remove("auto")                            // asked for: the app gets the list, changed or not
+        s.disc.remove("quiet")
+        return
+    }
     s.disc = [:]
     if (haveProject && s.project) s.disc["/project"] = s.project
     if (haveProject && s.identity) s.disc["/device"] = s.identity        // the resync's identity read: the same answer
@@ -1359,6 +1313,18 @@ void queueDiscovery(Map s, boolean haveProject = false, boolean front = false) {
     items << [type: "ReadRequest", url: OCCUPANCY_GROUPS_URL, then: "discoveryAnswer", ctx: [quiet: true]]
     items << [call: "discoveryDone"]
     if (front) s.queue.addAll(0, items) else s.queue.addAll(items)
+}
+
+// A read nobody asked for (a connect, the change check, a list the bridge pushed): the app gets the list only when it
+// differs from the last one it was given. Wanted while a read is under way, it is made once more when that one ends.
+// quiet: a failed read, and each failed request of it, says so at Debug (the change check's: the next check reads again).
+void autoDiscovery(Map s, boolean haveProject = false, boolean quiet = false) {
+    if (s.disc != null) { s.disc.again = true; return }
+    queueDiscovery(s, haveProject)
+    s.disc.auto = true
+    if (!quiet) return
+    s.disc.quiet = true
+    s.queue.findAll { it.then == "discoveryAnswer" }.each { it.ctx = [quiet: true] }   // its failed requests too
 }
 
 void discoveryAnswer(Map s, Map j, Map p, String line) {
@@ -1372,37 +1338,40 @@ void discoveryDone(Map s) {
     Map d = (Map) s.remove("disc")
     if (d == null) return
     String missing = d.failed ?: DISCOVERY_READS.find { !d[it] }
-    if (missing) { discoveryFailed(s, "no good answer to ${missing}"); return }
+    if (missing) { discoveryFailed(s, "no good answer to ${missing}", d.quiet == true); discoverAgain(s, d); return }
     Map list
     try {
         list = compactList(d)
     } catch (Exception e) {
         logErr "Discover: couldn't make sense of the answers (${e.message})"
         firstDiscoveryFailed(s)
+        discoverAgain(s, d)
         return
     }
-    applySystem((Map) list.system)
-    tellSerial(list.system?.serial)
-    String fp = deviceFingerprint((Map) d["/device"])
-    if (fp) state.deviceFingerprint = fp
-    state.zones = list.zones.collectEntries { [(it.id.toString()): it.control] }
-    state.scenes = list.scenes.collectEntries { [(it.id.toString()): it.name] }
-    Map btns = [:]
-    list.picos.each { Map pc -> pc.buttons.each { Map b -> btns[b.id.toString()] = [d: pc.id, n: b.n as Integer] } }
-    state.buttons = btns
-    state.buttonLayout = BUTTON_LAYOUT
     // Caseta: the occupancy groups with sensors. Lighting doesn't wait on them (as in pylutron-caseta): when their read
     // fails the list says occupancy is unknown (null, not empty), the groups and their routing stay as they were, and
     // the 10-minute check reads them again. An answer with no groups does clear them.
     if (d.occFailed) {
         list.occupancy = null
         list.occupancyUnknown = true                        // said outright: the app keeps the rooms it has
-        state.occRetry = true
-    } else {
-        state.occAreas = list.occupancy.collect { it.id as Integer }.sort()
-        state.occFingerprint = occFingerprint((Map) d[OCCUPANCY_GROUPS_URL])
-        state.remove("occRetry")
     }
+    String fp = listFingerprint(list)
+    if (d.auto && fp == state.listFingerprint && !oldButtonLayout()) {
+        logDebug "Devices read: nothing changed"
+        discoverAgain(s, d)
+        return
+    }
+    if (d.auto && state.listFingerprint) logInfo "The bridge's devices, scenes or rooms changed"
+    ["deviceFingerprint", "occFingerprint", "occRetry"].each { state.remove(it) }   // an older version's marks
+    applySystem((Map) list.system)
+    tellSerial(list.system?.serial)
+    state.zones = list.zones.collectEntries { [(it.id.toString()): it.control] }
+    state.scenes = list.scenes.collectEntries { [(it.id.toString()): it.name] }
+    Map btns = [:]
+    list.picos.each { Map pc -> pc.buttons.each { Map b -> btns[b.id.toString()] = [d: pc.id, n: b.n as Integer] } }
+    state.buttons = btns
+    state.buttonLayout = BUTTON_LAYOUT
+    if (!d.occFailed) state.occAreas = list.occupancy.collect { it.id as Integer }.sort()
     state.discoveredAt = now()
     sendEventLog(name: "numberOfButtons", value: list.scenes ? list.scenes.collect { it.id as Integer }.max() : 0)
     logInfo "Devices read: ${list.zones.size()} zones, ${list.picos.size()} Picos, ${list.scenes.size()} scenes" +
@@ -1410,10 +1379,52 @@ void discoveryDone(Map s) {
             (d.occFailed ? " (occupancy groups not read: the rooms with sensors are kept as they were)" : "")
     try {
         parent?.discoveryResult(list)
+        state.listFingerprint = fp                       // only once the app has it: a failed hand-over is made again
     } catch (Exception e) {
         logErr "Couldn't hand the device list to the app: ${e.message}"
     }
     subscribeNew(s)
+    discoverAgain(s, d)
+}
+
+// A list pushed, or a check due, while that read was under way: read once more, however that read ended (not on a
+// session the failure ended)
+void discoverAgain(Map s, Map d) {
+    if (!d.again || !sessions[device.idAsLong].is(s)) return
+    logDebug "The devices may have changed during the read: reading them once more"
+    autoDiscovery(s)
+    pump(s)
+}
+
+// The list handed to the app, less the time it was read, as a short fingerprint
+String listFingerprint(Map list) {
+    return Integer.toHexString(groovy.json.JsonOutput.toJson(list.findAll { k, v -> k != "readAt" }).hashCode())
+}
+
+/*******************************************************************
+ ***** Caseta: a device's rename or move, pushed
+********************************************************************/
+// A Caseta bridge accepts a subscription to /device and then sends the whole device list whenever a device is renamed
+// or moved to another room in the Lutron app. It makes those changes quicker and replaces nothing: the change check
+// still reads the devices, which finds what isn't pushed and makes again a re-read that failed. Refused or unanswered,
+// it is asked for again at each change check. A processor refuses this subscription and isn't asked.
+void queueDeviceSub(Map s) {
+    if (isProcessor() || s.deviceSub || s.deviceSubPending) return
+    s.deviceSubPending = true
+    enqueue(s, [type: "SubscribeRequest", url: "/device", then: "deviceSubscribed", ctx: [quiet: true]])
+}
+
+void deviceSubscribed(Map s, Map j, Map p, String line) {
+    s.remove("deviceSubPending")
+    if (j == null) { logDebug "No /device subscription: device changes are found by the ${CHANGE_CHECK_SECS.intdiv(60)}-minute check"; return }
+    s.deviceSub = p.tag
+}
+
+// A pushed list says only that something changed: the devices are read in full, as the change check reads them
+void deviceListPushed(Map s, Map j) {
+    logDebug "The bridge pushed its device list: reading the devices"
+    autoDiscovery(s)
+    pump(s)
 }
 
 // A re-read on a live link (Discover, the change check) subscribes the buttons and LEDs it hasn't yet
@@ -1618,8 +1629,9 @@ void pdSelf(Map s, Map j, Map p, String line) {
 // A re-read that fails keeps the list from before (Warn); a first one leaves nothing to route by, and one that was to
 // renumber a map saved with another numbering leaves a map that routes presses to the wrong buttons: in either case the
 // resync can't call the link connected, so it reconnects instead
-void discoveryFailed(Map s, String why) {
-    logWarn "Discover: ${why}; the device list wasn't updated"
+void discoveryFailed(Map s, String why, boolean quiet = false) {
+    String m = "Discover: ${why}; the device list wasn't updated".toString()
+    if (quiet) logDebug m else logWarn m
     firstDiscoveryFailed(s)
 }
 
@@ -1668,8 +1680,7 @@ void refreshAfterReread(Map s) {
     if (!sessions[device.idAsLong].is(s)) return
     enqueue(s, [type: "ReadRequest", url: "/zone/status", then: "refreshZoneAnswer"])
     if (hasOccupancyDevices()) enqueue(s, [type: "ReadRequest", url: occupancyUrl(), then: "refreshAreaAnswer"])
-    Set<String> have = childList().collect { it.deviceNetworkId.toString() } as Set
-    ((Map) state.leds ?: [:]).findAll { k, v -> "${device.deviceNetworkId}/d/${v.d}".toString() in have }.keySet().sort().each { Object id ->
+    addedIds((Map) state.leds).each { Integer id ->
         enqueue(s, [type: "ReadRequest", url: "/led/${id}/status".toString(), then: "ledStatusRead", ctx: [quiet: true, led: id]])
     }
     logInfo "The processor's devices were read again: reading their status"
@@ -1819,14 +1830,15 @@ void sendPing(Map s, String what) {
     if (what == "keepalive") { s.pingSentAt = now(); s.pingAnswered = false }
 }
 
-// A command, sent at once. Returns false (and says why) when there's no session to send it on.
-boolean command(String url, Map body, String desc, Map ctx = null, String type = "CreateRequest") {
+// A command, sent at once. Returns false (and says why) when there's no session to send it on. heldFrom: when it is
+// held, the time its hold counts from (commands that must go together or not at all share one).
+boolean command(String url, Map body, String desc, Map ctx = null, String type = "CreateRequest", Long heldFrom = null) {
     Map s0 = sessions[device.idAsLong]
     if (routingBlocked(desc)) return false
     boolean up = s0?.kind == "leap" && s0.phase == "up" && s0.verified     // verified: the bridge is the paired system
     // A flash step or restore isn't held: a restore that can't go stays in state.flashResume, for a resync to check
     if (!up && state.linkWanted != false && s0?.kind != "pair" && ctx?.flash == null && ctx?.restored == null) {
-        holdCommand(s0, [url: url, body: body, desc: desc, ctx: ctx, type: type])
+        holdCommand(s0, [url: url, body: body, desc: desc, ctx: ctx, type: type, at: heldFrom])
         return false
     }
     if (!ready(desc)) return false
@@ -1846,6 +1858,8 @@ boolean command(String url, Map body, String desc, Map ctx = null, String type =
 void blockRouting() {
     state.routingStale = true
     sessions[device.idAsLong]?.remove("zonesSeen")       // the devices' levels count again only from the refreshed status
+    sessions[device.idAsLong]?.remove("settles")
+    sessions[device.idAsLong]?.remove("settled")
     state.remove("releaseButtons")                       // a transfer can make a button a scene button (Press only)
     state.remove("flashResume")
     new ArrayList(flashMap().keySet()).each { String k -> stopFlash(intOrNull(k), "the processor's project changed") }
@@ -1893,7 +1907,7 @@ void connectUnlessRetrying() {
 void holdCommand(Map s, Map item) {
     List l = (List) heldCommands[device.idAsLong]
     if (l == null) { l = []; heldCommands[device.idAsLong] = l }
-    item.at = now()
+    if (item.at == null) item.at = now()
     l << item
     logInfo "Not connected: ${item.desc} held for up to ${HOLD_SECS} s" + (s == null ? "; connecting" : " (connecting)")
     if (s == null) connectUnlessRetrying()
@@ -1902,8 +1916,7 @@ void holdCommand(Map s, Map item) {
 
 // The link is up: send what is held and still fresh; drop the rest with the Warn
 // At the identity check: zone and scene commands go at once. Button presses wait for the resync's button subscriptions
-// (sendHeldPresses): a press's Press and Release reports are what give its event, and a Double Tap's second press goes
-// on the first one's Release.
+// (sendHeldPresses): a press's Press and Release reports are what give its event.
 void sendHeld(Map s, boolean presses = false) {
     List all = (List) heldCommands.remove(device.idAsLong)
     if (!all) return
@@ -1918,11 +1931,6 @@ void sendHeld(Map s, boolean presses = false) {
     if (fresh) logInfo "Sending ${fresh.size()} held command${fresh.size() == 1 ? '' : 's'}"
     for (int i = 0; i < fresh.size(); i++) {
         Map it2 = (Map) fresh[i]
-        // A Double Tap needs its first press's Release back to send the second: not without its button's subscription
-        if (it2.ctx?.again && !buttonSubscribedNow(s, it2.url.toString().tokenize("/")[1])) {
-            logWarn "${it2.desc}: Double Tap not sent (its button's subscription failed, so the first press's Release wouldn't come back)"
-            continue
-        }
         try {
             sendRequest(s, [what: "command", type: it2.type, url: it2.url, body: it2.body, desc: it2.desc, ctx: it2.ctx])
         } catch (Exception e) {
@@ -1934,11 +1942,7 @@ void sendHeld(Map s, boolean presses = false) {
         // what command()'s callers record when they send: digital for the zone's push or the button's press
         List<String> parts = it2.url.toString().tokenize("/")            // [zone, 3, commandprocessor]
         if (parts.size() == 3 && parts[2] == "commandprocessor" && parts[0] == "zone") markZoneCommand(parts[1])
-        else if (parts.size() == 3 && parts[2] == "commandprocessor" && parts[0] == "button") {
-            Map bst = buttonState(parts[1])
-            bst.sentAt = now()
-            if (it2.ctx?.again) armAgain(bst, it2.desc, it2.ctx.gid)    // a Double Tap: its second press on the Release
-        }
+        else if (parts.size() == 3 && parts[2] == "commandprocessor" && parts[0] == "button") buttonState(parts[1]).sentAt = now()
     }
 }
 
@@ -1999,19 +2003,20 @@ void checkPending() {
     List<String> late = s.pending.findAll { k, v -> (v.sentAt as Long) <= cutoff }.collect { it.key.toString() }
     for (String tag in late) {
         Map p = (Map) s.pending.remove(tag)
+        if (p.type != "SubscribeRequest") rememberAnswered(s, tag, p)   // its answer may still come: not a push then
         if (p.what in ["hello", "ping", "keepalive"]) {
-            String what = (p.what == "keepalive") ? "keep-alive ping" : (p.what == "hello" ? "first ping" : "ping")
+            String what = pingName(p.what)
             if (s.phase == "up") linkDropped("no answer to the ${what} in ${REPLY_SECS} s")
             else connectFailed("no answer to the ${what} in ${REPLY_SECS} s")
             return
         }
         if (p.what == "command") {
             logWarn "No answer to ${p.desc} (${p.url}) in ${REPLY_SECS} s"
-            if (p.ctx?.again) clearAgain(p.url?.toString()?.tokenize("/")?.getAt(1), p.ctx.gid)
             if (p.ctx?.flash != null) flashUnanswered(intOrNull(p.ctx.flash), p.ctx.run, "no answer to a step in ${REPLY_SECS} s")
-            // A flash's restore with no answer: the device still shows the flash's on, so the zone's status is read
-            if (p.ctx?.restored != null) queueRead("ReadRequest", "/zone/${p.ctx.restored}/status".toString(), "zoneStatusAnswer")
-            if (p.ctx?.readAfter != null) queueRead("ReadRequest", "/zone/${p.ctx.readAfter}/status".toString(), "zoneStatusAnswer")
+            // What ended a flash got no answer: the zone is read all the same. An unanswered restore keeps its undo
+            // (a drop may follow, and the next resync tries again)
+            if (p.ctx?.restored != null) { settleFor(s, p.ctx.restored, p.ctx.rid?.toString()); settleRead(p.ctx.restored, p.ctx.rid) }
+            if (p.ctx?.settle != null) settleRead(p.ctx.settle, p.ctx.sid)
         } else {
             if (s.reading == tag) s.reading = null
             String verb = (p.type == "SubscribeRequest") ? "Subscribe" : "Read"
@@ -2055,9 +2060,7 @@ void openLink(String probed = null) {
     }
     if (!creds?.ip || !creds?.certificate || !creds?.privateKey || !creds?.caCertificate) {
         logWarn "Not connecting: the app has no pairing (pair from the app first)"
-        stopLink("not paired")
-        sendEventLog(name: "connection", value: "disconnected")
-        setHealth("offline")
+        stopForGood("not paired")
         return
     }
     Map link = linkOf()
@@ -2072,7 +2075,7 @@ void openLink(String probed = null) {
     unschedule("reconnect")
     // New credentials from a pairing are on trial until this link checks the bridge's identity (credentialsWorked)
     if (creds.provisional) state.provisional = true else state.remove("provisional")
-    Map s = [kind: "leap", phase: "hello", n: 0, pending: [:], queue: [], reading: null, subs: [:], ip: creds.ip.toString()]
+    Map s = [kind: "leap", phase: "hello", n: 0, pending: [:], queue: [], reading: null, ip: creds.ip.toString()]
     Map opts = [secureSocket: true, certificate: creds.certificate, privateKey: creds.privateKey,
                 caCertificate: creds.caCertificate, ignoreSSLIssues: false, eol: "\n"]
     if (device.currentValue("ipAddress")?.toString() != creds.ip.toString()) sendEventLog(name: "ipAddress", value: creds.ip.toString())
@@ -2090,22 +2093,41 @@ void openLink(String probed = null) {
 void leapLine(Map s, Map j, String line) {
     if (j == null) { logDebug "Not JSON: ${line.take(80)}"; return }
     String tag = j.Header?.ClientTag?.toString()
-    Map p = tag ? (Map) s.pending.remove(tag) : null
-    if (p != null) { answer(s, j, p, line); return }
+    Map p = tag ? (Map) s.pending.get(tag) : null
+    if (p != null) {
+        // An interim answer (1xx, "102 Processing"): the real one follows with the same tag, so the request keeps
+        // waiting, and its time limit still runs from when it was sent
+        if (j.Header?.StatusCode?.toString()?.startsWith("1")) { logDebug "Interim answer to ${p.url}: ${j.Header.StatusCode}; waiting for the answer"; return }
+        s.pending.remove(tag)
+        if (p.type != "SubscribeRequest") rememberAnswered(s, tag, p)   // a subscription's changes reuse its tag
+        answer(s, j, p, line)
+        return
+    }
+    // A request can be answered twice with its tag ("202 Accepted", then "204 NoContent"): the second isn't a push
+    if (tag && s.answered?.containsKey(tag)) { logDebug "A further answer to ${s.answered[tag]}: ${leapSummary(j)} (not applied)"; return }
     // Until the identity is checked the bridge may be another system: its pushes must not reach this app's devices
     if (!s.verified) { logDebug "Before the bridge's identity is checked: ${leapSummary(j)} (not applied)"; return }
     // The routing is blocked (the project changed): a push names its zone, button or LED by a number that may be reused
     if (state.routingStale) { logDebug "While the processor's devices are read again: ${leapSummary(j)} (not applied)"; return }
     if (tag && tag == s.zoneSub) { zoneStatusAnswer(s, j, null, line); return }     // processor zone changes
     if (tag && tag == s.areaSub) { areaStatusAnswer(s, j, null, line); return }     // processor occupancy
+    if (tag && tag == s.deviceSub) { deviceListPushed(s, j); return }               // Caseta: a rename or a move
     // Caseta occupancy changes: routed by their body, whatever the message type or tag (no change has been captured)
     if (j.Body?.OccupancyGroupStatuses instanceof List) { areaStatusAnswer(s, j, null, line); return }
-    if (j.Body?.LEDStatus instanceof Map && !(tag && s.subs[tag])) { ledEvent((Map) j.Body.LEDStatus); return }
+    if (j.Body?.LEDStatus instanceof Map) { ledEvent((Map) j.Body.LEDStatus); return }
     if (j.CommuniqueType == "UpdateResponse" && j.Body?.ButtonStatus instanceof Map) buttonEvent((Map) j.Body.ButtonStatus)
-    if (tag && s.subs[tag]) { logLong("Event for ${s.subs[tag]}", line); return }
     if (j.Body?.ButtonStatus instanceof Map) return
     if (!tag && j.Body?.ZoneStatus instanceof Map) { zoneStatus((Map) j.Body.ZoneStatus); return }
     logDebug "Not handled: ${leapSummary(j)}"
+}
+
+// The last requests answered or given up on this connection, by tag, so a further or late answer to one of them is
+// known for what it is
+void rememberAnswered(Map s, String tag, Map p) {
+    if (s.answered == null) s.answered = [:]
+    Map done = (Map) s.answered
+    done[tag] = p.url?.toString() ?: p.what?.toString() ?: "a request"
+    while (done.size() > ANSWERED_KEPT) done.remove(done.keySet().iterator().next())
 }
 
 void answer(Map s, Map j, Map p, String line) {
@@ -2119,22 +2141,20 @@ void answer(Map s, Map j, Map p, String line) {
         case "command":
             String msg = "${p.desc}: ${status}, ${ms} ms"
             if (!ok) logWarn "${p.desc} failed: ${status}${j.Body?.Message ? ': ' + j.Body.Message : ''}"
-            else if (p.ctx?.raw) logLong(msg, line)
+            else if (p.ctx?.raw) logInfo "${msg}: ${line}"
             else logDebug msg
             if (p.ctx?.flash != null) flashAnswered(intOrNull(p.ctx.flash), p.ctx.run, intOrNull(p.ctx.seq), ok, status)
-            // A Double Tap's first press refused: no Release will come, so no second press is due
-            if (!ok && p.ctx?.again) clearAgain(p.url?.toString()?.tokenize("/")?.getAt(1), p.ctx.gid)
             // A scene: pushed once the bridge has taken it (204), whether it went at once or was held for the link
             if (ok && p.ctx?.scene != null) {
                 sendEventLog(name: "pushed", value: intOrNull(p.ctx.scene), isStateChange: true, type: "digital",
                              desc: "Scene ${p.ctx.scene} (${p.ctx.name}) pressed")
             }
-            // The device showed on through the flash; a restore that leaves the level where it was may get no status
-            // push, so the zone's status is read once the restore is answered
-            if (p.ctx?.readAfter != null) queueRead("ReadRequest", "/zone/${p.ctx.readAfter}/status".toString(), "zoneStatusAnswer")
+            // What ended a flash is answered: the zone is read once, and that read is what its device shows
+            if (p.ctx?.settle != null) settleRead(p.ctx.settle, p.ctx.sid)
             if (p.ctx?.restored != null) {
-                clearFlashResume(intOrNull(p.ctx.restored), p.ctx.rid)   // this restore's result is known: its record goes
-                queueRead("ReadRequest", "/zone/${p.ctx.restored}/status".toString(), "zoneStatusAnswer")
+                settleFor(s, p.ctx.restored, p.ctx.rid?.toString())     // frozen until that read, the undo's record gone
+                clearFlashResume(intOrNull(p.ctx.restored), p.ctx.rid)
+                settleRead(p.ctx.restored, p.ctx.rid)
             }
             return
         default:                                    // a read or subscription
@@ -2149,11 +2169,13 @@ void answer(Map s, Map j, Map p, String line) {
     }
 }
 
+String pingName(Object what) { (what == "keepalive") ? "keep-alive ping" : (what == "hello" ? "first ping" : "ping") }
+
 void pingAnswer(Map s, Map j, Map p, long ms) {
     Object v = (j.Body?.PingResponse instanceof Map) ? j.Body.PingResponse.LEAPVersion : null
     boolean ok = j.Header?.StatusCode?.toString()?.startsWith("2") && v != null
     if (!ok) {
-        String what = (p.what == "keepalive") ? "keep-alive ping" : (p.what == "hello" ? "first ping" : "ping")
+        String what = pingName(p.what)
         if (p.what == "hello") connectFailed("unexpected answer to the first ping: ${leapSummary(j)}")
         // a live link whose ping fails is as dead as one whose ping goes unanswered (the timeout can't see it any more)
         else if (s.phase == "up") linkDropped("unexpected answer to the ${what}: ${leapSummary(j)}")
@@ -2219,10 +2241,8 @@ void identityAnswer(Map s, Map j, Map p, String line) {
             // which belongs to the right one, so the link goes back to it rather than stopping
             provisionalFailed("it is a different Lutron system from the one this app's devices belong to", true)
             logWarn "The new pairing is with another Lutron system: its certificate is dropped; connecting with the pairing before"
-            endSession()
-            sendEventLog(name: "connection", value: "disconnected")
-            linkOf().attempt = 0
-            runIn(1, "connect")
+            closeSession()
+            connectAnew()
             return
         }
         wrongSystem()
@@ -2242,10 +2262,8 @@ void identityAnswer(Map s, Map j, Map p, String line) {
         state.remove("provisionalFails")
         if (kept != true) {
             logWarn "The app didn't keep the new certificate: connecting with the pairing it has"
-            endSession()
-            sendEventLog(name: "connection", value: "disconnected")
-            linkOf().attempt = 0
-            runIn(1, "connect")
+            closeSession()
+            connectAnew()
             return
         }
     }
@@ -2259,6 +2277,7 @@ void identityAnswer(Map s, Map j, Map p, String line) {
     s.identity = j                                      // a discovery that follows uses it rather than reading it again
     // A processor whose project changed (a Designer transfer) may use a held command's zone or LED number for another load
     String stamp = (isProcessor() && s.project) ? projectStamp((Map) s.project) : null
+    s.projectStamp = stamp
     // The saved routing is verified only against a known modified time: with none from /project, or none kept with the
     // routing, whether the project changed can't be told, so it is handled as if it had (the devices read again, and the
     // re-read keeps the first modified time it gets)
@@ -2277,8 +2296,7 @@ void resyncAfterIdentity(Map s, Map j, Map p, String line) {
     if (isProcessor()) {
         // Processor: discovery by area, zone status only by subscription. A Designer transfer changes
         // ProjectModifiedTimestamp (and restarts the processor): read the devices again when it differs
-        String stamp = s.project ? projectStamp((Map) s.project) : null
-        s.projectStamp = stamp
+        String stamp = s.projectStamp
         boolean changed = stamp && state.projectStamp && stamp != state.projectStamp
         if (!state.discoveredAt || changed || oldButtonLayout() || state.routingStale) {
             if (state.routingStale && !changed) logInfo "The devices haven't been read since the processor's project changed: reading them again"
@@ -2297,19 +2315,22 @@ void resyncAfterIdentity(Map s, Map j, Map p, String line) {
     }
     if (oldButtonLayout()) logInfo "The button map was saved with another numbering: reading the devices again"
     if (!state.discoveredAt || oldButtonLayout()) queueDiscovery(s, true)   // never read: discovery first
-    else selfAnswer(s, j, p, line)                      // the /device just read: the serial and the change check
     enqueue(s, [call: "queueButtonSubs"])               // after discovery: the button map comes from it
     enqueue(s, [call: "sendHeldPresses"])               // once the buttons are subscribed: their reports come back
     enqueue(s, [type: "ReadRequest", url: "/zone/status", then: "resyncZoneStatus"])
     enqueue(s, [call: "queueAreaSub"])
+    enqueue(s, [call: "queueDeviceSub"])
     enqueue(s, [call: "resyncDone"])
+    // What changed while the link was down, or since a first discovery read /device: read after the /device
+    // subscription, so nothing falls between a read and the pushes that follow it. The link is up meanwhile.
+    enqueue(s, [call: "autoDiscovery"])
     pump(s)
 }
 
 // Paired with another Lutron system that has its own devices: the routing kept for the old one (zones, buttons, LEDs,
 // the change-check marks) goes, so the resync reads the new system's devices
 void forgetRouting() {
-    ["discoveredAt", "zones", "scenes", "buttons", "leds", "occAreas", "buttonLayout", "projectStamp", "deviceFingerprint",
+    ["discoveredAt", "zones", "scenes", "buttons", "leds", "occAreas", "buttonLayout", "projectStamp", "listFingerprint",
      "flashResume", "routingStale", "releaseButtons"].each { state.remove(it) }      // routingStale: the old system's block goes with it
     logDebug "Another Lutron system: the device list and routing kept for the old one are gone"
 }
@@ -2318,29 +2339,25 @@ void forgetRouting() {
 // link stays down until the user acts (a new app instance for this system, or this app's devices removed)
 void wrongSystem() {
     logWarn "This isn't the Lutron system this app's devices belong to (its serial number differs): nothing sent, not connecting again. Add it in a new app instance, or remove this app's devices first."
-    stopLink("another Lutron system")
-    sendEventLog(name: "connection", value: "disconnected")
-    setHealth("offline")                                 // stopped for good: not available, the devices with it
+    stopForGood("another Lutron system")
 }
 
 // A step the resync can't do without (the system's type, its identity, a first device list, the zone status) failed:
 // rather than report connected with stale or missing devices, reconnect, backing off while it keeps failing
 void resyncIncomplete(Map s, String why) {
-    resyncFailed(s) { int n -> "Resync incomplete (${why}): reconnecting (${n} in a row)".toString() }
+    resyncFailed(s, "Resync incomplete (${why}): reconnecting")
 }
 
 // A resync that can't complete (resyncIncomplete, coreSubscriptionFailed): drop the link and reconnect, backing off
 // (5, 15, 30 s...) while it keeps failing; offline from the second in a row (the first may be a restart under way).
-// warning: the Warn, given how many in a row.
-void resyncFailed(Map s, Closure warning) {
+void resyncFailed(Map s, String warning) {
     if (!sessions[device.idAsLong].is(s)) return
     Map link = linkOf()
     int n = ((link.subFails ?: 0) as Integer) + 1
     link.subFails = n
-    logWarn warning(n)
+    logWarn "${warning} (${n} in a row)"
     if (n >= 2) setHealth("offline")
-    endSession()
-    sendEventLog(name: "connection", value: "disconnected")
+    closeSession()
     link.attempt = n - 1
     scheduleReconnect()
 }
@@ -2365,6 +2382,7 @@ void resyncDone(Map s) {
     setHealth("online")                                  // online only now: identity checked, devices and status read
     childrenHealth("online")
     resumeFlashes(s)
+    queueBatteryRead(s)
 }
 
 /*******************************************************************
@@ -2431,113 +2449,47 @@ void areaStatusAnswer(Map s, Map j, Map p, String line) {
 // re-login fails, for the same reason). A refused button or LED subscription Warns once and is subscribed again at the
 // change check (subFailed): reconnecting can't fix a stale button list.
 void coreSubscriptionFailed(Map s, String url) {
-    resyncFailed(s) { int n -> "Subscribe ${url} failed: reconnecting so status keeps coming (${n} in a row)".toString() }
+    resyncFailed(s, "Subscribe ${url} failed: reconnecting so status keeps coming")
 }
 
 /*******************************************************************
  ***** Noticing changes on the bridge, and its identity
 ********************************************************************/
-// The bridge's own entry in /device (IsThisDevice): its serial number goes to the app
-void selfAnswer(Map s, Map j, Map p, String line) {
-    Map me = (Map) ((List) j?.Body?.Devices ?: []).find { it.IsThisDevice }
-    if (me?.SerialNumber != null) tellSerial(me.SerialNumber)
-    if (isProcessor()) return
-    // Caseta: devices added, removed, renamed or replaced in the Lutron app change this list
-    String fp = deviceFingerprint(j)
-    if (fp == null) return
-    if (state.deviceFingerprint && fp != state.deviceFingerprint && state.discoveredAt && s.disc == null) {
-        logInfo "The bridge's devices changed: reading them again"
-        queueDiscovery(s, true, true)                                // j is the resync's identity read (s.identity)
-    } else if (!state.deviceFingerprint && state.discoveredAt) {
-        state.deviceFingerprint = fp                                  // none kept yet: keep this one
-    }
-}
-
-// Between connects: a Caseta bridge doesn't restart for a change in the Lutron app, nor a processor for a rename there,
-// and neither pushes one; so every CHANGE_CHECK_SECS the live link reads /project (processor) or /device (Caseta). On a
-// change it reads the devices again on the live link and subscribes what's new.
+// Between connects: a Caseta bridge doesn't restart for a change in the Lutron app, nor a processor for a rename there.
+// A Caseta bridge pushes a device's rename or move on a /device subscription (deviceListPushed), which only makes
+// those quicker; a processor pushes nothing, and neither pushes a scene. So every CHANGE_CHECK_SECS the live link reads
+// /project (processor) and, when its modified time changed, the devices; a Caseta bridge's devices are read each time
+// (autoDiscovery). What's new is subscribed.
 void changeCheck() {
     checkLogsOff()
     Map s = sessions[device.idAsLong]
     if (s?.kind != "leap" || s.phase != "up") return
-    enqueue(s, [type: "ReadRequest", url: isProcessor() ? "/project" : "/device", then: "changeCheckAnswer"])
-    // Caseta: which sensors are in which room doesn't show in /device, nor do the scenes: each is checked on its own
-    if (!isProcessor()) {
-        enqueue(s, [type: "ReadRequest", url: OCCUPANCY_GROUPS_URL, then: "occupancyCheckAnswer", ctx: [quiet: true]])
-        enqueue(s, [type: "ReadRequest", url: "/virtualbutton", then: "sceneCheckAnswer", ctx: [quiet: true]])
+    runIn(CHANGE_CHECK_SECS, "changeCheck")
+    if (isProcessor()) enqueue(s, [type: "ReadRequest", url: "/project", then: "changeCheckAnswer"])
+    else {
+        queueDeviceSub(s)                                // refused before: asked again, ahead of the read
+        autoDiscovery(s, false, true)
     }
     queueAreaSub(s)
     queueLedSubs(s)                                      // anything refused before: subscribed again
     queueButtonSubs(s)
+    queueBatteryRead(s)
     pump(s)
 }
 
 void changeCheckAnswer(Map s, Map j, Map p, String line) {
-    if (!sessions[device.idAsLong].is(s)) return
-    runIn(CHANGE_CHECK_SECS, "changeCheck")
-    if (j == null) return
-    if (isProcessor()) {
-        String stamp = projectStamp(j)
-        boolean changed = stamp && state.projectStamp && stamp != state.projectStamp
-        boolean unverified = stamp && !state.projectStamp            // routing kept with no modified time to check it by
-        if (!changed && !unverified && !oldButtonLayout()) return
-        if (changed) logInfo "The processor's project changed (${state.projectStamp} -> ${stamp}): reading its devices again"
-        else if (unverified) logInfo "No modified time kept with the processor's devices: reading them again"
-        else logInfo "The button map was saved with another numbering: reading the devices again"
-        s.projectStamp = stamp                                      // kept when the discovery completes
-        if (changed || unverified) blockRouting()                   // its numbers may name other loads until then
-        queueProcessorDiscovery(s)
-    } else {
-        String fp = deviceFingerprint(j)
-        boolean changed = fp && state.deviceFingerprint && fp != state.deviceFingerprint
-        if (!changed && !oldButtonLayout()) return
-        logInfo(changed ? "The bridge's devices changed: reading them again" : "The button map was saved with another numbering: reading the devices again")
-        queueDiscovery(s)
-    }
+    if (!sessions[device.idAsLong].is(s) || j == null) return
+    String stamp = projectStamp(j)
+    boolean changed = stamp && state.projectStamp && stamp != state.projectStamp
+    boolean unverified = stamp && !state.projectStamp            // routing kept with no modified time to check it by
+    if (!changed && !unverified && !oldButtonLayout()) return
+    if (changed) logInfo "The processor's project changed (${state.projectStamp} -> ${stamp}): reading its devices again"
+    else if (unverified) logInfo "No modified time kept with the processor's devices: reading them again"
+    else logInfo "The button map was saved with another numbering: reading the devices again"
+    s.projectStamp = stamp                                      // kept when the discovery completes
+    if (changed || unverified) blockRouting()                   // its numbers may name other loads until then
+    queueProcessorDiscovery(s)
     pump(s)
-}
-
-// Caseta, the change check's /occupancygroup read: a change in the groups with sensors (or a read that failed at the last
-// discovery) reads the devices again. A failed read here changes nothing: the next check tries again.
-void occupancyCheckAnswer(Map s, Map j, Map p, String line) {
-    if (!sessions[device.idAsLong].is(s) || j == null || s.disc != null) return   // s.disc: a discovery already queued
-    String fp = occFingerprint(j)
-    // None kept yet (a device list from before occupancy was read): with groups that have sensors, or groups kept
-    // with no fingerprint, the devices are read so the app gets the rooms; with none anywhere, the fingerprint is kept
-    if (state.occFingerprint == null && !state.occRetry) {
-        boolean anySensors = ((List) j.Body?.OccupancyGroups ?: []).any { it.AssociatedSensors && it.AssociatedAreas }
-        if (!anySensors && !state.occAreas) { state.occFingerprint = fp; return }
-    }
-    if (!state.occRetry && fp == state.occFingerprint) return
-    logInfo(state.occRetry ? "The occupancy groups weren't read last time: reading the devices again"
-          : state.occFingerprint == null ? "The occupancy groups haven't been read with the devices yet: reading the devices again"
-          : "The bridge's occupancy groups changed: reading the devices again")
-    queueDiscovery(s)
-    pump(s)
-}
-
-// Caseta, the change check's /virtualbutton read: programmed scenes other than the bridge's map (a scene added, renamed
-// or deleted in the Lutron app) read the devices again; push and Activate Scene go only by that map. A failed read
-// changes nothing: the next check tries again.
-void sceneCheckAnswer(Map s, Map j, Map p, String line) {
-    if (!sessions[device.idAsLong].is(s) || j == null || s.disc != null) return   // s.disc: a discovery already queued
-    List vbs = (List) j.Body?.VirtualButtons
-    if (vbs == null) return
-    Map now = vbs.findAll { it.IsProgrammed }.collectEntries { [(hrefId(it.href).toString()): it.Name?.toString()] }
-    Map kept = ((Map) state.scenes ?: [:]).collectEntries { k, v -> [(k.toString()): v?.toString()] }
-    if (now == kept) return
-    logInfo "The bridge's scenes changed: reading the devices again"
-    queueDiscovery(s)
-    pump(s)
-}
-
-// The groups with sensors in an /occupancygroup answer (group, room, sensors), as a short fingerprint
-String occFingerprint(Map j) {
-    List gs = ((List) j?.Body?.OccupancyGroups ?: []).findAll { it.AssociatedSensors && it.AssociatedAreas }
-    String all = gs.collect { Map g ->
-        "${g.href}|${g.AssociatedAreas[0]?.Area?.href}|${g.AssociatedSensors.collect { it.OccupancySensor?.href }.sort().join(',')}"
-    }.sort().join(";")
-    return "${gs.size()}:${Integer.toHexString(all.hashCode())}".toString()
 }
 
 // "YYYY-MM-DD hh:mm:ss" of /project's ProjectModifiedTimestamp (processors), or null
@@ -2546,15 +2498,6 @@ String projectStamp(Map j) {
     if (t == null) return null
     List<String> f = [t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second].collect { (it ?: 0).toString().padLeft(2, "0") }
     return "${f[0]}-${f[1]}-${f[2]} ${f[3]}:${f[4]}:${f[5]}".toString()
-}
-
-// Each device's href, name, type, room and full name (room and name: a room renamed changes it) in a /device answer, as
-// a short fingerprint, or null
-String deviceFingerprint(Map j) {
-    List devs = (List) j?.Body?.Devices
-    if (!devs) return null
-    String all = devs.collect { "${it.href}|${it.Name}|${it.DeviceType}|${it.AssociatedArea?.href}|${(it.FullyQualifiedName ?: []).join('/')}" }.sort().join(";")
-    return "${devs.size()}:${Integer.toHexString(all.hashCode())}".toString()
 }
 
 void tellSerial(Object serial) {
@@ -2604,8 +2547,7 @@ void linkDropped(String why) {
         link.remove("fastUntil")
     }
     dropStart(why, s)
-    endSession()
-    sendEventLog(name: "connection", value: "disconnected")
+    closeSession()
     scheduleReconnect()
 }
 
@@ -2613,8 +2555,7 @@ void linkDropped(String why) {
 void connectFailed(String why) {
     Map link = linkOf()
     if (state.provisional) provisionalFailed(why, certFailure(why))
-    endSession()
-    sendEventLog(name: "connection", value: "disconnected")
+    closeSession()
     if ((link.attempt as Integer) > 0) setHealth("offline")
     logWarn "Connect failed: ${why}"
     dropCheck("connect failed: ${why.take(60)}")
@@ -2743,14 +2684,20 @@ void lostSession(String what) {
     logWarn "Connection lost: ${what} with no session (driver code saved?); reconnecting"
     dropStart("${what} with no session (driver code saved?)", null)
     sendEventLog(name: "connection", value: "disconnected")
-    linkOf().attempt = 0
-    runIn(1, "connect")
+    connectAnew()
 }
 
 // The commands held for the link to come up are dropped, each with a Warn
 void dropHeld(String why) {
     ((List) heldCommands.remove(device.idAsLong) ?: []).each { logWarn "${it.desc} not sent (${why})" }
     unschedule("heldExpire")
+}
+
+// The link stopped until the user acts: shown disconnected, and the devices not available
+void stopForGood(String why) {
+    stopLink(why)
+    sendEventLog(name: "connection", value: "disconnected")
+    setHealth("offline")
 }
 
 // Ends any session and stops reconnecting (pairing, Disconnect, not paired).
@@ -2897,6 +2844,12 @@ String openSession(Map s, String ip, Integer port, Map opts) {
         return "connect to ${ip}:${port} threw ${e.message ?: e.toString()}".toString()
     }
     return null
+}
+
+// Ends the session and shows it
+void closeSession() {
+    endSession()
+    sendEventLog(name: "connection", value: "disconnected")
 }
 
 void endSession() {

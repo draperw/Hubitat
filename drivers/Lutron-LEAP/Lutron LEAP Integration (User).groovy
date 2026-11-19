@@ -12,6 +12,9 @@
  *  Requires Hubitat 2.5.0 or later (the definition's menu option; the mDNS listener needs 2.4.1). Tested on 2.5.3.
  *
  *  Changelog:
+ *  ## [1.0.2] - 2026-11-18
+ *    - An occupancy device that follows its sensors to another area asks the bridge for that area's status a moment
+ *      later, no longer from inside the bridge's own hand-over of the device list (a call the bridge would wait on).
  *  ## [1.0.1] - 2026-11-12
  *    - Pico and keypad button numbers come from the bridge (Hubitat's Lutron Telnet numbering for Picos, Lutron's own
  *      numbers for keypads): numberOfButtons, LED buttons and the button map follow them.
@@ -19,52 +22,15 @@
  *      app has devices (its zone 3 isn't this app's zone 3), and taken when it has none.
  *    - A new pairing's credentials replace the old ones only once they work on the bridge's LEAP port, within 2 minutes;
  *      Cancel works until then too, and either way the pairing before is kept.
+ *    - Each pairing keeps its own address; Connect now uses the address shown in the field, as Done does.
+ *    - Following the bridge compares what mDNS finds with the address the link uses, and asks the mDNS listener too.
  *    - Flash passes the dimmer's time limit to the bridge.
- *    - Caseta occupancy: a room with sensors is offered as "<room> Motion (Occupancy, untested)"; a list from the bridge
- *      that couldn't read the rooms keeps the ones from before.
- *    - Cancel during key generation wins: a key finished after it is discarded and the pairing port isn't opened.
- *    - Each pairing keeps its own address: a new pairing's certificate is tried where it paired, and the kept pairing
- *      connects at its own address (moved by Done with a new address, or by following the bridge), not one typed in
- *      for a pairing that then failed or was cancelled (an install from before keeps the address it was last verified at).
- *    - Following the bridge compares what mDNS finds with the address the link uses, not the field; a browse that finds
- *      no Lutron system asks the _leap._tcp listener too.
- *    - An occupancy device follows its sensors to a new area only when all of them are there.
- *    - Pairing uses the address as it was when Pair was clicked.
- *    - Following the bridge also asks the mDNS listener when the browse doesn't show the paired bridge at a new address,
- *      and an address both report keeps the serial from either.
- *    - Connect now uses the address shown in the field, as Done does. Cancel wins over a key handed to the bridge
- *      meanwhile, and its clean-up (its bridge session included) leaves a newer attempt alone; a pairing that fails takes
- *      its stored certificate with it.
- *    - "Name new devices" names new devices only: each device keeps the style it was made with when it follows Lutron.
- *    - The bridge leaves a new certificate's trial only once the app has kept it. The pairing before is never written
- *      over: credentials have two slots, a new one goes into the free slot, and the app switches to it once it worked,
- *      slot, store, fingerprints and address in one record written at once. One caller settles a trial (its promotion,
- *      failure, expiry or Cancel), which settles it on every way out.
- *    - A device list with keypads or occupancy only counts as a read with devices (missing devices are marked).
- *    - A look for the bridge keeps a follow asked for during its browse. A zone whose controlling device changes under
- *      the same number Warns (its rules act on that number).
- *    - A new address saved (Done) during a pairing is moved to by the first Done after the pairing ends, instead of
- *      being taken as already applied.
- *    - Cancel wins over a certificate the bridge is handing over at that moment, and over a pairing status reported then.
- *      Pair is offered again 15 s after Cancel, once the cancelled attempt's work has ended. A certificate for an
- *      attempt that has ended is ignored, however late it comes; so are the bridge's progress and failure reports for one.
- *    - Pair is refused while a pairing is under way (from a page opened before it began, or two at the same moment).
- *      A key job that never finished (the hub restarted during it) no longer keeps Pair away.
- *    - Clear pairing is refused while a pairing is under way, and ends any key job left over. A key job's failure only
- *      fails its own attempt.
- *    - A pairing interrupted by a hub restart ends then; one whose bridge session was lost otherwise (a bridge code save)
- *      ends after its phase's time limit. The working pairing is kept.
- *    - Following the bridge, an address the live browse finds outranks one the listener has cached. The page shows when
- *      a new certificate is being checked.
- *    - A hub restart while a new certificate is being checked leaves the check to finish. Cancel does nothing when no
- *      pairing is under way.
- *    - Connect now always says so in the log (on a link that is up it reconnects it); so do Pair and Cancel. A pairing
- *      that worked leaves no bookkeeping behind in the app's state.
- *    - Picos get their list of buttons (lutronButtons), as keypads do: a Pico refuses a button it doesn't have itself.
- *    - A discovered service with a malformed serial no longer stops discovery, and a look that stopped part way no
- *      longer blocks the next one.
- *    - Debug logging ends at its deadline also when its timer was lost (checked at a hub start and when the app is
- *      opened).
+ *    - Caseta occupancy: a room with sensors is offered as "<room> Motion (Occupancy, untested)". An occupancy device
+ *      follows its sensors to a new area only when all of them are there.
+ *    - "Name new devices" names new devices only: each device keeps the style it was made with.
+ *    - A zone whose controlling device changes under the same number Warns (its rules act on that number).
+ *    - Pair is refused while a pairing is under way, and offered again 15 s after Cancel.
+ *    - Many fixes to pairing, Cancel, hub restarts during a pairing and finding the bridge, found in review.
  *  ## [1.0.0] - 2026-11-10
  *    - First release. One app per Lutron Caseta Smart Bridge or RadioRA 3 processor (HomeWorks QSX and Athena are offered,
  *      marked untested): finds it by mDNS and follows it to a new address, pairs by the bridge button (key and certificate
@@ -99,7 +65,7 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.ConcurrentHashMap
 
-@Field static final String VERSION = "1.0.1"
+@Field static final String VERSION = "1.0.2"
 @Field static final String APP_NAME = "Lutron LEAP Integration (User)"
 @Field static final String BRIDGE_DRIVER = "Lutron LEAP Bridge (User)"
 @Field static final String NAMESPACE = "draperw"
@@ -712,6 +678,10 @@ void discoveryResult(Map list) {
 // An occupancy device whose area has no sensors any more follows them when they all went to one area that has no
 // device yet: its DNI changes to that area (rules use the device's id, not its DNI). Otherwise it stays, marked "not
 // on the bridge any more", with a Warn saying where its sensors went.
+void areaMoved(Map data) {
+    try { bridgeDevice()?.childrenAdded((List) data?.dnis ?: []) } catch (Exception e) { logDebug "Couldn't ask the bridge for the area's status: ${e.message}" }
+}
+
 void followMovedSensors(Map list) {
     List occ = (List) list?.occupancy
     if (occ == null) return
@@ -737,7 +707,9 @@ void followMovedSensors(Map list) {
                 ch.setDeviceNetworkId(toDni)
                 ch.updateDataValue("sensors", ((List) to.sensors).join(","))
                 logInfo "Moved ${ch.displayName} to area ${to.name}: its occupancy sensors moved there"
-                try { bridgeDevice()?.childrenAdded([toDni]) } catch (Exception e) { logDebug "Couldn't ask the bridge for the area's status: ${e.message}" }
+                // The bridge is in the middle of handing this list over: a call into it now would wait on the bridge
+                // itself, so the area's status is asked for once this has returned
+                runIn(1, "areaMoved", [data: [dnis: [toDni]], overwrite: false])
                 return
             } catch (Exception e) {
                 logWarn "Couldn't move ${ch.displayName} to area ${to.name}: ${e.message}"

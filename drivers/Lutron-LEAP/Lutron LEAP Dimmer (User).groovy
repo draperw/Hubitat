@@ -6,13 +6,15 @@
  *  Used with the app, which needs Hubitat 2.5.0 or later. Tested on 2.5.3.
  *
  *  Changelog:
+ *  ## [1.0.2] - 2026-11-18
+ *    - During a flash the device keeps the switch and level it had (a light that was off shows off while it flashes),
+ *      and shows the real state once the flash has ended. Used with bridge 1.0.2.
  *  ## [1.0.1] - 2026-11-12
  *    - Flash leaves the level as it was: the next On goes back to the level from before it, not to the 100% of an on
  *      step (the bridge keeps the steps' reports, a late one included, off the device).
  *    - Flash time limit (seconds, 1-3600, default 60): the flash stops and the light goes back to how it was. A press at
  *      the wall during a flash isn't reported, so it can't stop one.
- *    - During a flash the device shows on (no event per step); Flash has no input on the device page (the rate is the
- *      Flash rate preference).
+ *    - Flash has no input on the device page (the rate is the Flash rate preference).
  *    - Debug logging ends at its deadline also when its timer was lost (checked when an event comes from the bridge).
  *  ## [1.0.0] - 2026-11-10
  *    - First release. A dimmer zone: on / off / level with transitions, start / stop level change, Flash with its rate,
@@ -35,7 +37,7 @@
  */
 import groovy.transform.Field
 
-@Field static final String VERSION = "1.0.1"
+@Field static final String VERSION = "1.0.2"
 @Field static final String DRIVER  = "Lutron LEAP Dimmer (User)"
 
 // On goes to the last level. Transitions are in seconds, fractions allowed; 0 sends a fade-less GoToLevel, which changes
@@ -143,8 +145,8 @@ void refresh() {
     parent?.componentRefresh(device)
 }
 
-// The bridge switches the zone on and off at this rate until another command. The steps' reports don't reach this device
-// (it shows on, at its level), so the next On goes back to the level from before the flash
+// The bridge switches the zone on and off at this rate until another command or the time limit. Nothing reaches this
+// device meanwhile (it keeps the switch and level it had), so the next On goes back to the level from before the flash
 void flash(Object rateToFlash = null) {
     Integer ms = intOrNull(rateToFlash) ?: intOrNull(settings.flashRate) ?: intOrNull(DEFAULT_FLASH_RATE)
     Integer limit = intOrNull(settings.flashTimeLimit) ?: DEFAULT_FLASH_LIMIT_SECS

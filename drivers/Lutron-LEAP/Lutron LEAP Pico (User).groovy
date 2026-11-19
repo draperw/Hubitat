@@ -9,6 +9,9 @@
  *  Used with the app, which needs Hubitat 2.5.0 or later. Tested on 2.5.3.
  *
  *  Changelog:
+ *  ## [1.0.2] - 2026-11-18
+ *    - batteryStatus (good, low or unknown): the battery state the bridge or processor reports for the Pico, checked
+ *      at each connect and every 10 minutes.
  *  ## [1.0.1] - 2026-11-12
  *    - Buttons numbered as Hubitat's Lutron integrations (Telnet and LEAP): on 1, raise 2, favourite 3, lower 4, off 5;
  *      a 2-button or paddle Pico on 1, off 2.
@@ -40,7 +43,7 @@
  */
 import groovy.transform.Field
 
-@Field static final String VERSION = "1.0.1"
+@Field static final String VERSION = "1.0.2"
 @Field static final String DRIVER  = "Lutron LEAP Pico (User)"
 
 // Read by the bridge on every press; it uses the same defaults while a preference is unsaved. Measured on a Caseta
@@ -59,6 +62,7 @@ metadata {
         capability "DoubleTapableButton"
 
         attribute "healthStatus", "enum", ["unknown", "online", "offline"]
+        attribute "batteryStatus", "enum", ["good", "low", "unknown"]
     }
     preferences {
         input name: "holdMs", type: "enum", title: fmtTitle("Hold time"), options: HOLD_TIMES, defaultValue: "1000",

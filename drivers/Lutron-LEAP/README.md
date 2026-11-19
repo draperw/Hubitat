@@ -48,6 +48,8 @@ Requires Hubitat 2.5.0 or later (tested on 2.5.3).
 - **Picos** are numbered as Hubitat's own Lutron integrations number them, top to bottom: on 1, raise 2, favourite 3,
   lower 4, off 5; a 2-button or paddle Pico is on 1, off 2. Rules written for Hubitat's Lutron integrations carry over
   with a device change.
+- **Battery:** each Pico has a `batteryStatus` attribute, `good`, `low` or `unknown`, as the bridge or processor
+  reports it; it is checked at each connect and every 10 minutes.
 - **Standard Pico driver:** a quick press is `pushed` 0.75 s after the release, the *Double-tap window* in which a second
   press makes it `doubleTapped`; a press past the *Hold time* (1 s) is `held`, then `released`. Set the window to Off for
   `pushed` at the release (and no double tap), or use the **Fast Pico** driver for `pushed` at the press.
@@ -58,7 +60,7 @@ Requires Hubitat 2.5.0 or later (tested on 2.5.3).
 
 The bridge device checks every 10 minutes whether anything changed on the Lutron side (a device added, removed,
 renamed or moved to another room; on Caseta also a scene added, renamed or deleted) and reads the device list again
-when it did. To get a change at once instead of waiting for that check, do either of these; they run the same read:
+when it did. On Caseta a device renamed or moved in the Lutron app is noticed at once: the bridge reports it. To get a change at once instead of waiting for that check, do either of these; they run the same read:
 
 - In the app: *Devices* > **Refresh device list**.
 - On the bridge device's page: **Discover**.
